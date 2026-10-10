@@ -1,0 +1,12 @@
+.venv*/
+__pycache__/
+*.py[cod]
+.DS_Store
+.ruff_cache/
+.pytest_cache/
+videos/
+# Supply your own ROM locally. Never distribute game ROMs.
+data/*.md
+data/*.bin
+data/*.gen
+data/*.smd

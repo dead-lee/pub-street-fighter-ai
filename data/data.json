@@ -4,6 +4,10 @@
             "address": 16745563,
             "type": "|u1"
         },
+        "stage": {
+            "address": 16750251,
+            "type": "|u1"
+        },
         "agent_hp": {
             "address": 16744514,
             "type": ">i2"

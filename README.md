@@ -11,14 +11,17 @@
 ```text
 .
 ├── data/                        # 关卡存档与游戏配置
-│   ├── Champion.X.Level*.state  # 第 1～12 关开局存档
-│   ├── data.json                # 游戏内存变量定义
+│   ├── Champion.X.Level*.state  # 第 1～12 关开局存档，难度为菜单 8 星
+│   ├── Champion.X.Bonus*.state  # 砸汽车、打砖墙、滚木桶的开打存档
+│   ├── data.json                # 游戏内存变量定义，含关卡编号 stage
 │   └── scenario_full_frame.json # 游戏场景配置
 ├── main/                        # 训练与测试代码
 │   ├── train.py                 # 全关卡并行训练与续训
-│   ├── test.py                  # 逐关测试与连续闯关
+│   ├── train_barrel.py          # 只训练滚木桶，出招锁定轻拳升龙
+│   ├── test.py                  # 逐关测试、连续闯关、全屏原速演示
+│   ├── presenter.py             # 全屏画面和声音
 │   ├── env_utils.py             # ROM 配置与环境构建
-│   └── custom_wrappers.py       # 画面处理、动作映射与奖励计算
+│   └── custom_wrappers.py       # 画面处理、动作映射、奖励与奖励关套路
 ├── logs/
 │   ├── trained_models/
 │   │   └── ppo_ryu.zip          # 训练完成的模型权重
@@ -79,6 +82,30 @@ python -m main.test --episodes 1 --no-load-level-saves
 
 连续闯关只在开局加载第一关存档，之后通过游戏自身的关卡推进挑战下一位对手，失败即结束本次尝试。该模式会输出已挑战关卡的胜率和完整通关率。逐关测试中全部获胜表示模型通过了各关卡存档下的评估；完整通关率则以一次连续打通 12 关为准。
 
+全屏、原速、有声音的演示：
+
+```bash
+python -m main.test --episodes 1 --no-load-level-saves --realtime
+```
+
+窗口按游戏原速播放，画面拉大后仍是一块块像素。按 Esc 或关闭窗口退出。结算分数开始跳动 1 秒后，会点一次轻拳把后面的跳分跳过，胜利姿势、台词和世界地图仍会播放。
+
+### 奖励关
+
+连续闯关走到奖励关时，不把画面交给对战模型，而用固定按键。对战模型没见过这些画面。
+
+| 关卡 | 当前结果 |
+| --- | --- |
+| 砸汽车 | 左边贴身一记重脚（这一脚打两段），再重拳升龙翻到右边，上半截重踢、底盘蹲中拳。可以 PERFECT |
+| 打砖墙 | 先拆左边，走近后用重踢，最后中拳收尾。可以 PERFECT |
+| 滚木桶 | 轻拳升龙，桶滚到左边就转身，人被带走后走回落点。目前打碎 17/20，还没全破 |
+
+木桶的落点有随机性，固定节拍打不满。`main/train_barrel.py` 用和对战相同的 PPO、84×84 运动图和 NatureCNN，只在木桶存档上训练。出招锁成轻拳升龙，模型只学往左走、往右走、站着等，以及朝哪边、什么时候发招。奖励是游戏实际加上的分数，全破和时间奖励都会把分抬高。训练中的权重写在 `logs/BARREL_MOTION/`，还没接进演示。
+
+```bash
+python -m main.train_barrel --num-envs 8 --total-timesteps 2000000
+```
+
 常用测试参数如下：
 
 | 参数 | 作用 | 默认值 |
@@ -89,7 +116,8 @@ python -m main.test --episodes 1 --no-load-level-saves
 | `--no-load-level-saves` | 从第 1 关连续闯关 | 默认逐关加载存档 |
 | `--reset-round` | 逐关测试时，以单次 KO 为评估单位 | 默认三局两胜 |
 | `--device auto/cpu/cuda/mps` | 选择模型推理设备 | `auto` |
-| `--speed N` | 通过减少显示帧数加快可视化 | `4` |
+| `--speed N` | 通过减少显示帧数加快可视化；`--realtime` 时忽略 | `4` |
+| `--realtime` | 全屏、原速、有声音 | 关闭 |
 
 ### 训练模型
 

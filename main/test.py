@@ -1,3 +1,14 @@
+"""用训练好的模型打《街头霸王 2》，并统计每一关的胜负。
+
+有两种走法：
+
+- 默认逐关读档：每一关都从自己的开局存档打起，关与关之间的地图不会出现。
+- --no-load-level-saves：只读第 1 关存档。打赢后游戏自己飞到下一站，
+  台词、世界地图、对决画面都由游戏内部播出来。输掉就停，不再读后面的存档。
+
+加上 --realtime 时，画面全屏、按原速播放，并打开声音。
+"""
+
 import argparse
 import sys
 from pathlib import Path
@@ -20,10 +31,10 @@ DEFAULT_MODEL_PATH = Path(
 TIME_PENALTY = 0.0005
 OBS_SIZE = 84
 RENDERING = True
-LOAD_LEVEL_SAVES = True  # Reset from each level's save-state.
-RESET_ROUND = False  # End the episode at each KO when enabled.
+LOAD_LEVEL_SAVES = True  # 默认每一关都读对应存档。
+RESET_ROUND = False  # 打开后以一次击倒为结束，不再打三局两胜。
 NUM_EPISODES = 10
-SPEED = 4.0
+SPEED = 4.0  # 快速预览时每 4 帧才画 1 帧。--realtime 会忽略它。
 
 
 def parse_args() -> argparse.Namespace:
@@ -61,11 +72,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--torch-threads", type=int, default=1)
     parser.add_argument("--no-render", action="store_true")
     parser.add_argument("--speed", type=float, default=SPEED)
+    parser.add_argument(
+        "--realtime",
+        action="store_true",
+        help="Play at original speed on a fullscreen window, with sound.",
+    )
     return parser.parse_args()
 
 
 def make_level_env(level: int, reset_round: bool,
-                   rendering: bool, render_skip: int):
+                   rendering: bool, render_skip: int, realtime: bool = False):
+    """建一局从指定关卡存档开始的环境。level 从 1 数起。"""
     env = make_sfighter_env(
         seed=level,
         obs_size=OBS_SIZE,
@@ -75,13 +92,16 @@ def make_level_env(level: int, reset_round: bool,
         render_skip=render_skip,
         reset_round=reset_round,
         auto_reset=False,
+        realtime=realtime,
     )()
     return env
 
 
 def play_level_from_save(level: int, model: PPO, reset_round: bool,
-                         rendering: bool, render_skip: int) -> tuple[bool, float]:
-    env = make_level_env(level, reset_round, rendering, render_skip)
+                         rendering: bool, render_skip: int,
+                         realtime: bool = False) -> tuple[bool, float]:
+    """读这一关自己的存档，打完一场就关掉环境。"""
+    env = make_level_env(level, reset_round, rendering, render_skip, realtime)
     try:
         obs, info = env.reset(seed=level)
         victory, total_reward, _, _ = play_match(env, model, obs)
@@ -91,6 +111,7 @@ def play_level_from_save(level: int, model: PPO, reset_round: bool,
 
 
 def play_match(env, model: PPO, obs):
+    """让模型一直打，直到这一场三局两胜结束，或步数被截断。"""
     total_reward = 0.0
     done = False
     info = {}
@@ -99,17 +120,19 @@ def play_match(env, model: PPO, obs):
         obs, reward, terminated, truncated, info = env.step(action)
         total_reward += float(reward)
         done = terminated or truncated
+    # 对手血量已变为负数、自己还站着，并且不是因为超时被截断，才算赢。
     victory = (not truncated and info.get("enemy_hp", 0) < 0
                and info.get("agent_hp", -1) >= 0)
     return victory, total_reward, obs, info
 
 
 def play_continuous_arcade_run(model: PPO, rendering: bool,
-                               render_skip: int) -> tuple[int, bool]:
-    env = make_level_env(1, False, rendering, render_skip)
+                               render_skip: int, realtime: bool = False) -> tuple[int, bool]:
+    """从第 1 关存档打起，之后都靠游戏自己换对手，不再读档。"""
+    env = make_level_env(1, False, rendering, render_skip, realtime)
     victories = 0
     try:
-        # This is the only save-state load in a continuous arcade run.
+        # 整趟闯关只有这一次读档。后面的关卡、地图都是游戏内部推进的。
         obs, info = env.reset(seed=1)
         for level in range(1, 13):
             victory, reward, obs, info = play_match(env, model, obs)
@@ -121,7 +144,9 @@ def play_continuous_arcade_run(model: PPO, rendering: bool,
             if level < 12:
                 print("Advancing in the running game (no save-state reload)...")
                 advance = env.get_wrapper_attr("advance_to_next_match")
-                obs, info = advance()
+                # 胜利台词加世界地图大约几十秒，中间还可能插入 bonus。
+                # 20000 帧大约 5 分半，够这些过场走完再进入下一场。
+                obs, info = advance(max_steps=20000)
         return victories, True
     finally:
         env.close()
@@ -150,16 +175,20 @@ def main() -> None:
     torch.set_num_threads(args.torch_threads)
     validate_rom()
     model = PPO.load(str(args.model_path), device=detect_device(args.device))
+    # 权重是按 84×84 的三通道运动图、27 个离散动作训练的，形状不对就不能测。
     if model.observation_space.shape != (3, OBS_SIZE, OBS_SIZE) or model.action_space != Discrete(27):
         raise ValueError("Model must use 84x84 motion RGB observations and 27 discrete actions")
 
     rendering = RENDERING and not args.no_render
-    render_skip = max(1, round(args.speed))
+    # 原速必须每帧都画、都出声，不能再用 --speed 跳帧。
+    render_skip = 1 if args.realtime else max(1, round(args.speed))
     mode = (
         "matching save-state per level"
         if args.load_level_saves
         else "continuous arcade from Level 1"
     )
+    if args.realtime:
+        print("Playback: original speed, fullscreen, sound. Press Esc to quit.", flush=True)
     match_format = "single KO" if args.reset_round else "best-of-three"
     print(
         f"Testing {args.episodes} pass(es), levels 1-12, "
@@ -174,9 +203,10 @@ def main() -> None:
         print(f"\n=== {pass_name} {episode}/{args.episodes} ===")
         if not args.load_level_saves:
             victories, run_complete = play_continuous_arcade_run(
-                model, rendering, render_skip
+                model, rendering, render_skip, args.realtime
             )
             total_victories += victories
+            # 输掉的那一关也算进分母，所以没打完时分母是胜场再加 1。
             total_levels += victories + (not run_complete)
         else:
             run_complete = True
@@ -187,7 +217,7 @@ def main() -> None:
                 )
                 victory, reward = play_level_from_save(
                     level, model, args.reset_round,
-                    rendering, render_skip
+                    rendering, render_skip, args.realtime
                 )
                 total_levels += 1
                 status = "Victory" if victory else "Defeat"

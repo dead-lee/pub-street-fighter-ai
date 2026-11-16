@@ -1,3 +1,10 @@
+"""用同一套 PPO 策略，同时在 12 关的开局存档上训练隆。
+
+默认每一关 64 个模拟器，一共 768 个环境，共用一个 NatureCNN。
+每个环境只负责自己那一关的存档，采样结果合在一起更新同一个模型。
+机器不够时用 --envs-per-level 1 先小规模跑。
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -15,23 +22,25 @@ from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.vec_env import SubprocVecEnv
 
 
+# 每一关的并行模拟器数量。12 个关卡用同一组数字。
 BASE_LEVEL_ENV_COUNTS = (64,) * 12
 DEFAULT_ENV_MULTIPLIER = 1
 LEVEL_ENV_COUNTS = tuple(count * DEFAULT_ENV_MULTIPLIER for count in BASE_LEVEL_ENV_COUNTS)
 LEVEL_COUNT = 12
 NUM_ENVS = sum(LEVEL_ENV_COUNTS)
-FEATURES_DIM = 1024
-DEFAULT_N_STEPS = 128
+FEATURES_DIM = 1024  # NatureCNN 抽出来的特征长度。
+DEFAULT_N_STEPS = 128  # 每个模拟器两次更新之间采集多少步。
 DEFAULT_BATCH_SIZE = 8192
 DEFAULT_N_EPOCHS = 3
 OBSERVATION_MODE = "motion_rgb"
-TIME_PENALTY = 0.0005
+TIME_PENALTY = 0.0005  # 每执行一次动作扣这么多，逼模型不要干站着。
 DEFAULT_LOG_DIR = "logs/ALL_MOTION_SIMULTANEOUS"
 
 
 def build_worker_levels(
     level_env_counts: Sequence[int] = LEVEL_ENV_COUNTS,
 ) -> tuple[int, ...]:
+    """把「每关几个环境」展开成每个子进程对应的关卡编号，从 0 数到 11。"""
     if len(level_env_counts) != LEVEL_COUNT:
         raise ValueError(f"level_env_counts must contain {LEVEL_COUNT} entries")
     if any(count <= 0 for count in level_env_counts):
@@ -44,12 +53,14 @@ def build_worker_levels(
 
 
 def scaled_level_env_counts(multiplier: int) -> tuple[int, ...]:
+    """按倍数放大默认的每关 64 个环境。"""
     if multiplier <= 0:
         raise ValueError("--env-multiplier must be positive")
     return tuple(count * multiplier for count in BASE_LEVEL_ENV_COUNTS)
 
 
 def detect_device(requested: str) -> str:
+    """auto 时按 CUDA、Apple MPS、CPU 的顺序挑一个能用的设备。"""
     if requested == "auto":
         if torch.cuda.is_available():
             return "cuda"
@@ -74,7 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--gae-lambda", type=float, default=0.95)
     parser.add_argument("--clip-range", type=float, default=0.2)
-    parser.add_argument("--ent-coef", type=float, default=0.01)
+    parser.add_argument("--ent-coef", type=float, default=0.01)  # 鼓励动作不要过早变得单一。
     parser.add_argument("--vf-coef", type=float, default=0.5)
     parser.add_argument("--target-kl", type=float, default=0.02)
     parser.add_argument("--features-dim", type=int, default=FEATURES_DIM)
@@ -110,6 +121,7 @@ def build_parser() -> argparse.ArgumentParser:
 def validate_args(
     args: argparse.Namespace, level_env_counts: Sequence[int]
 ) -> None:
+    """检查学习率和采样量能对上。batch 必须整除一次采集的总步数。"""
     positive_values = {
         "total-timesteps": args.total_timesteps,
         "n-steps": args.n_steps,
@@ -145,6 +157,7 @@ def validate_args(
 
 
 def ppo_hyperparams(args: argparse.Namespace) -> dict[str, object]:
+    """新建模型和续训都用同一组超参，避免加载旧权重时把学习率悄悄换掉。"""
     return {
         "n_steps": args.n_steps,
         "batch_size": args.batch_size,
@@ -167,6 +180,7 @@ def write_training_config(
     level_env_counts: Sequence[int],
     device: str,
 ) -> None:
+    """把这次训练的关卡分配和画面处理方式写进日志目录，方便以后对照曲线。"""
     config = {
         **vars(args),
         "resume_model": str(args.resume_model) if args.resume_model else None,
@@ -197,6 +211,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     build_worker_levels(level_env_counts)
     if args.torch_threads < 1:
         raise ValueError("--torch-threads must be positive")
+    # 模拟器已经占了很多进程，PPO 这边默认只用 1 个 CPU 线程。
     torch.set_num_threads(args.torch_threads)
     validate_args(args, level_env_counts)
     device = detect_device(args.device)
@@ -208,6 +223,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     write_training_config(log_dir, args, worker_levels, level_env_counts, device)
 
+    # 每个子进程一个模拟器，开局关卡由 worker_levels 决定。训练不画画面。
     env = SubprocVecEnv(
         [
             make_sfighter_env(
@@ -264,7 +280,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             parameter.numel() for parameter in model.policy.parameters()
         )
         checkpoint_callback = CheckpointCallback(
-            # CheckpointCallback counts vector steps.
+            # 回调按「所有环境走一步」计数，所以要除掉环境个数才是总帧数。
             save_freq=max(args.checkpoint_timesteps // len(worker_levels), 1),
             save_path=str(checkpoint_dir),
             name_prefix="ppo_motion_simultaneous_ryu",

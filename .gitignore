@@ -5,6 +5,9 @@ __pycache__/
 .ruff_cache/
 .pytest_cache/
 videos/
+# 木桶每 10 万步的中间权重。每份约 40MB，十轮合计约 8GB，超过一次推送能放下的体积。
+# 复现看各目录的 training_config.json，结果看 best.zip 和 final.zip。
+logs/BARREL_*/TRAINING/*_steps.zip
 # Supply your own ROM locally. Never distribute game ROMs.
 data/*.md
 data/*.bin

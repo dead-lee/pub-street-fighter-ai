@@ -2,6 +2,9 @@
 
 出招锁成轻拳升龙。模型只决定往左走、往右走、站着等，还是朝哪边发这一招。
 奖励是游戏实际加上的分数，所以全破和时间奖励都算在目标里。
+升龙打空要扣分。人还没站稳就按，会被吃掉。
+从第 2 秒起，一整秒里没有打出伤害，再扣掉相当于一只桶的奖励。
+和上一发升龙朝向相反、而且打中的那一下，分数再给一倍。
 对战默认 12 关各 64 个环境。木桶只有这一关，默认 8 个并行模拟器，把核留给网络更新。
 """
 
@@ -78,6 +81,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--eval-only", type=Path,
         help="只评估这份模型，不训练。打印每局实际加上的分数。",
+    )
+    parser.add_argument(
+        "--watch", action="store_true",
+        help="评估时全屏、原速、有声音。只和 --eval-only 一起用。",
     )
     return parser
 
@@ -184,8 +191,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     device = detect_device(args.device)
     validate_rom()
 
+    if args.watch and not args.eval_only:
+        raise ValueError("--watch only applies to --eval-only")
     if args.eval_only:
-        env = make_barrel_env(seed=args.seed, time_penalty=args.time_penalty)()
+        env = make_barrel_env(
+            seed=args.seed,
+            time_penalty=args.time_penalty,
+            render=args.watch,
+            realtime=args.watch,
+        )()
         try:
             model = PPO.load(str(args.eval_only), device=device)
             scores = [
@@ -200,6 +214,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 0
 
+    from main.custom_wrappers import BARREL_SCORE_SCALE, BARREL_TURN_BONUS
+
     log_dir = Path(args.log_dir)
     checkpoint_dir = log_dir / "TRAINING"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -209,7 +225,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "device_resolved": device,
         "observation_mode": "motion_rgb",
         "actions": "wait_left_right_light_shoryuken",
-        "reward": "score_delta * 0.001 - time_penalty",
+        "reward": (
+            f"score_delta * {BARREL_SCORE_SCALE:g} - time_penalty "
+            "- whiff - wrong_move - blocked - idle_second "
+            f"+ opposite_shoryuken * {BARREL_TURN_BONUS:g}"
+        ),
     }
     (log_dir / "training_config.json").write_text(
         json.dumps(config, indent=2) + "\n", encoding="utf-8"

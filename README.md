@@ -24,7 +24,8 @@
 │   └── custom_wrappers.py       # 画面处理、动作映射、奖励与奖励关套路
 ├── logs/
 │   ├── trained_models/
-│   │   └── ppo_ryu.zip          # 训练完成的模型权重
+│   │   ├── ppo_ryu.zip          # 对战模型权重
+│   │   └── ppo_barrel_ryu.zip   # 滚木桶模型权重，连续闯关走到木桶时使用
 │   └── events.out.tfevents.*    # 训练记录
 ├── requirements.txt
 ├── LICENSE
@@ -35,18 +36,18 @@
 
 ## 运行指南
 
-本项目基于 Python 编程语言，主要使用了 [Gymnasium](https://gymnasium.farama.org/)、[Stable-Retro](https://github.com/Farama-Foundation/stable-retro)、[Stable-Baselines3](https://stable-baselines3.readthedocs.io/) 等开源代码库。建议使用 Python 3.10 配置环境；当前版本已在 macOS / Apple Silicon / Python 3.10.20 环境中验证 CPU 和 Apple MPS 路径。以下为控制台/终端指令，均从项目根目录执行。
+本项目基于 Python 编程语言，主要使用了 [Gymnasium](https://gymnasium.farama.org/)、[Stable-Retro](https://github.com/Farama-Foundation/stable-retro)、[Stable-Baselines3](https://stable-baselines3.readthedocs.io/) 等开源代码库。Python 最低版本是 3.10，3.10 及以上都可以，包括 3.14。`requirements.txt` 里的版本号同样是最低要求，更高的兼容版本可以用。当前已在 macOS / Apple Silicon 上用 Python 3.14 跑通 CPU 和 Apple MPS。以下为控制台/终端指令，均从项目根目录执行。
 
 ### 环境配置
 
 ```bash
-# 创建 Python 虚拟环境并安装依赖
-python3.10 -m venv .venv
+# 用 Python 3.10 或更高版本创建虚拟环境并安装依赖
+python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-也可以使用 [Anaconda](https://www.anaconda.com/) 创建 Python 3.10 环境，再安装 `requirements.txt` 中的依赖。Windows 使用虚拟环境时，激活命令为 `.venv\Scripts\activate`；其他平台的安装要求请参考 Stable-Retro 和 PyTorch 的官方说明。
+也可以使用已有的 [Anaconda](https://www.anaconda.com/) Python 3.10 及以上环境，再安装 `requirements.txt` 中的依赖。Windows 使用虚拟环境时，激活命令为 `.venv\Scripts\activate`；其他平台的安装要求请参考 Stable-Retro 和 PyTorch 的官方说明。
 
 运行程序还需要《街头霸王·二：冠军特别版》美版的游戏 ROM 文件（可以理解为游戏程序本身）。Stable-Retro 不提供游戏 ROM，本项目也不包含该文件，需要自行通过合法途径获得。准备好支持的 ROM 后，通过环境变量指定其绝对路径：
 
@@ -80,7 +81,7 @@ python -m main.test --episodes 1 --no-render --device cpu
 python -m main.test --episodes 1 --no-load-level-saves
 ```
 
-连续闯关只在开局加载第一关存档，之后通过游戏自身的关卡推进挑战下一位对手，失败即结束本次尝试。该模式会输出已挑战关卡的胜率和完整通关率。逐关测试中全部获胜表示模型通过了各关卡存档下的评估；完整通关率则以一次连续打通 12 关为准。
+连续闯关只在开局加载第一关存档，之后通过游戏自身的关卡推进。演示不会在 12 场后自己结束，木桶、四大天王和结局都会继续播，直到关掉窗口。
 
 全屏、原速、有声音的演示：
 
@@ -88,7 +89,7 @@ python -m main.test --episodes 1 --no-load-level-saves
 python -m main.test --episodes 1 --no-load-level-saves --realtime
 ```
 
-窗口按游戏原速播放，画面拉大后仍是一块块像素。按 Esc 或关闭窗口退出。结算分数开始跳动 1 秒后，会点一次轻拳把后面的跳分跳过，胜利姿势、台词和世界地图仍会播放。
+窗口按游戏原速播放，画面拉大后仍是一块块像素。画面铺满屏幕，但不是独占全屏，系统快捷键不会被吃掉。程序不会自己关窗口，看完后按 Esc 或关闭窗口退出。结算分数开始跳动 1 秒后，会点一次轻拳把后面的跳分跳过，胜利姿势、台词和世界地图仍会播放。
 
 ### 奖励关
 
@@ -97,14 +98,30 @@ python -m main.test --episodes 1 --no-load-level-saves --realtime
 | 关卡 | 当前结果 |
 | --- | --- |
 | 砸汽车 | 左边贴身一记重脚（这一脚打两段），再重拳升龙翻到右边，上半截重踢、底盘蹲中拳。可以 PERFECT |
-| 打砖墙 | 先拆左边，走近后用重踢，最后中拳收尾。可以 PERFECT |
-| 滚木桶 | 轻拳升龙，桶滚到左边就转身，人被带走后走回落点。目前打碎 17/20，还没全破 |
+| 打砖墙 | 重拳升龙上到左侧高处后，先把三脚有伤害的重腿踢完，再走到右边地面踢三脚二段。贴最后一段用朝砖跳，不用升龙或旋风腿。存档实测第 1915 帧拆完，得分 544300 |
+| 滚木桶 | 连续闯关使用 `logs/trained_models/ppo_barrel_ryu.zip`。存档实测加分 62300，左右升龙都会出。固定套路仍是 17/20、加分 30300，只作对照 |
 
-木桶的落点有随机性，固定节拍打不满。`main/train_barrel.py` 用和对战相同的 PPO、84×84 运动图和 NatureCNN，只在木桶存档上训练。出招锁成轻拳升龙，模型只学往左走、往右走、站着等，以及朝哪边、什么时候发招。奖励是游戏实际加上的分数，全破和时间奖励都会把分抬高。训练中的权重写在 `logs/BARREL_MOTION/`，还没接进演示。
+木桶的落点会随出手时机变化。`main/train_barrel.py` 用和对战相同的 PPO、84×84 运动图和 NatureCNN，只在木桶存档上训练。动作只有五个：站着等、往左走、往右走、朝左轻拳升龙、朝右轻拳升龙。走路按住 4 帧。升龙是 6 帧：先朝目标方向站两帧把脸转过来，再接前、下、下前、下前加轻拳。面朝右时直接按朝左的键，游戏会收成轻拳或波动拳。
+
+奖励按游戏实际加上的分数计，每一千分给 10。升龙打空扣 1，打成轻拳或波动拳扣 2。人还没收招就再按，这一下被吃掉。从第 2 秒起，一整秒没打出伤害再扣 1。和上一发升龙方向相反而且打中时，这一下的分数再给一倍。当前权重是 150 万步时评估最好的一版，三局都是 +62300。连续闯关走到木桶就用它。单独看这一局：
+
+```bash
+python -m main.train_barrel --eval-only logs/trained_models/ppo_barrel_ryu.zip --eval-episodes 1 --watch
+```
+
+从头训练：
 
 ```bash
 python -m main.train_barrel --num-envs 8 --total-timesteps 2000000
 ```
+
+这几轮训练里踩过的点：
+
+- 打中给的分如果盖不过空挥、串招和罚站，策略会改成站着不动。早期每一千分只给 1 时就是这样。把打中提高到每一千分给 10 之后，出手才比干站更赚。
+- 只重罚串招、取消空挥之后，乱按一局的扣分比站着还多，策略同样停手。空挥和串招都要扣，但扣分不能压过打中。
+- 换边加分只有在相反方向真的升起来时才进得了训练数据。指令没把脸转过来时，朝左的键不是升龙，加到三成或一倍都不会被抽到。
+- 升龙和波动拳的状态都是 524，要靠有没有离地分开。朝当前脸的方向，升龙第 16 帧离地。面朝左再朝右打，要到第 30 帧才离地。第 16 帧还站在地上就判成波动拳，会把这发慢升龙扣成串招，换边加分也加不上。波动拳会一直站到大约第 55 帧，所以改成第 40 帧还没离地才算波动拳。
+- 接进演示时要沿用训练的出招门闩。上一发还没结算完，人即使已经站回地上，新的升龙也不能送出去，否则键会变成轻拳，局面和训练对不上。
 
 常用测试参数如下：
 

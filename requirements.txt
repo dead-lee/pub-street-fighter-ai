@@ -1,5 +1,8 @@
+# 这里写的是最低版本。高于下限、低于上限的兼容版本都可以。
+# Python >= 3.10。3.14 已在 macOS / Apple Silicon 上验证。
+# stable-retro 停在 1.0.x：内存地址和存档是按这个版本核对的。
 gymnasium>=1.0,<2
-stable-retro==1.0.1
+stable-retro>=1.0.1,<1.1
 stable-baselines3>=2.7,<3
 tensorboard>=2.18,<3
 torch>=2.3,<3

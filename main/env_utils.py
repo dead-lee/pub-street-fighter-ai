@@ -105,7 +105,7 @@ def make_sfighter_env(seed=0, obs_size=84, use_monitor=False, render=False,
 
 
 def make_barrel_env(seed=0, obs_size=84, use_monitor=False, time_penalty=0.0005,
-                    max_episode_steps=900):
+                    max_episode_steps=900, render=False, realtime=False):
     """木桶训练用的环境工厂。观测和对战相同，出招只剩走位和轻拳升龙。
 
     一局大约 550 个动作就会切去下一场。900 是超时上限，正常在切场时结束。
@@ -128,8 +128,9 @@ def make_barrel_env(seed=0, obs_size=84, use_monitor=False, time_penalty=0.0005,
         )
         try:
             env = BarrelBonusWrapper(
-                env, obs_size=obs_size, render=False, initial_level=0,
+                env, obs_size=obs_size, render=render, initial_level=0,
                 time_penalty=time_penalty, max_episode_steps=max_episode_steps,
+                realtime=realtime,
             )
             env = BarrelActionWrapper(env)
             if use_monitor:

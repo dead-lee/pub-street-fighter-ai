@@ -128,26 +128,30 @@ def play_match(env, model: PPO, obs):
 
 def play_continuous_arcade_run(model: PPO, rendering: bool,
                                render_skip: int, realtime: bool = False) -> tuple[int, bool]:
-    """从第 1 关存档打起，之后都靠游戏自己换对手，不再读档。"""
+    """从第 1 关存档打起，之后都靠游戏自己换对手，不再读档。
+
+    不在第 12 场结束。木桶、四大天王和结局都在后面。
+    窗口一直开着，直到用户按 Esc 或把窗口关掉。
+    """
     env = make_level_env(1, False, rendering, render_skip, realtime)
     victories = 0
     try:
-        # 整趟闯关只有这一次读档。后面的关卡、地图都是游戏内部推进的。
+        # 整趟闯关只有这一次读档。后面的关卡、地图、结局都是游戏内部推进的。
         obs, info = env.reset(seed=1)
-        for level in range(1, 13):
+        level = 1
+        while True:
             victory, reward, obs, info = play_match(env, model, obs)
             status = "Victory" if victory else "Defeat"
-            print(f"Level {level}: {status}, reward={reward:.4f}")
-            if not victory:
-                return victories, False
-            victories += 1
-            if level < 12:
-                print("Advancing in the running game (no save-state reload)...")
-                advance = env.get_wrapper_attr("advance_to_next_match")
-                # 胜利台词加世界地图大约几十秒，中间还可能插入 bonus。
-                # 20000 帧大约 5 分半，够这些过场走完再进入下一场。
-                obs, info = advance(max_steps=20000)
-        return victories, True
+            print(f"Level {level}: {status}, reward={reward:.4f}", flush=True)
+            if victory:
+                victories += 1
+            else:
+                print("Match lost. The window stays open until it is closed.", flush=True)
+            print("Advancing in the running game (no save-state reload)...", flush=True)
+            advance = env.get_wrapper_attr("advance_to_next_match")
+            # 不设步数上限。下一场没来就是结局或游戏结束画面，继续播，不自己关窗口。
+            obs, info = advance(max_steps=None)
+            level += 1
     finally:
         env.close()
 

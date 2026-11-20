@@ -35,13 +35,20 @@ class RealtimePresenter:
         self._gl = gl
         display = pyglet.canvas.get_display()
         screen = display.get_default_screen()
-        # vsync 关掉：刷新率不一定是 59.92，用音频时钟来限速更接近原机。
+        # 不用独占全屏。独占全屏会把 Command-Tab 这类系统按键一起吃掉，切不走。
+        # 无边框铺满屏幕，看起来仍是一整块画面，系统快捷键留给系统。
         self.window = pyglet.window.Window(
-            fullscreen=True,
+            width=screen.width,
+            height=screen.height,
             screen=screen,
+            style=pyglet.window.Window.WINDOW_STYLE_BORDERLESS,
+            fullscreen=False,
             vsync=False,
             caption="Street Fighter II",
         )
+        self.window.set_location(screen.x, screen.y)
+        if hasattr(self.window, "set_exclusive_keyboard"):
+            self.window.set_exclusive_keyboard(False)
         self.window.activate()
         self.closed = False
 

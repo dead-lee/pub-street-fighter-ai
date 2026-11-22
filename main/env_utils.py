@@ -105,10 +105,13 @@ def make_sfighter_env(seed=0, obs_size=84, use_monitor=False, render=False,
 
 
 def make_barrel_env(seed=0, obs_size=84, use_monitor=False, time_penalty=0.0005,
-                    max_episode_steps=900, render=False, realtime=False):
+                    max_episode_steps=900, render=False, realtime=False,
+                    live_only=False, barrel_index=None):
     """木桶训练用的环境工厂。观测和对战相同，出招只剩走位和轻拳升龙。
 
     一局大约 550 个动作就会切去下一场。900 是超时上限，正常在切场时结束。
+    live_only 时不加载原来那份木桶存档，只练实战里截下来的开局。
+    barrel_index 给定时，这个环境每次都从那一份开局打起。
     """
     if obs_size < 36 or max_episode_steps < 1 or time_penalty < 0:
         raise ValueError("obs_size must be >= 36, max_episode_steps positive, time_penalty non-negative")
@@ -132,6 +135,10 @@ def make_barrel_env(seed=0, obs_size=84, use_monitor=False, time_penalty=0.0005,
                 time_penalty=time_penalty, max_episode_steps=max_episode_steps,
                 realtime=realtime,
             )
+            env.live_only = live_only
+            # 指定某一份开局时，这个环境每次都打它，用来把梯度集中到还没清完的那份。
+            if barrel_index is not None:
+                env.force_barrel_index = int(barrel_index)
             env = BarrelActionWrapper(env)
             if use_monitor:
                 env = Monitor(env)

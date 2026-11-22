@@ -17,6 +17,7 @@
 
 import os
 import collections
+import random
 
 import cv2
 import numpy as np
@@ -80,6 +81,22 @@ STATE_PATHS = [
 ]
 # 滚木桶开打的存档。训练只从这里重开，不走前面的对战。
 BARREL_STATE_PATH = os.path.join(DATA_DIR, "Champion.X.BonusBarrel.state")
+
+
+def barrel_state_paths(include_original=True):
+    """训练用的木桶开局。原来的存档可以不放进来，只练实战截下来的三份。
+
+    木桶落点每次不一样。只在一份存档上练，换一局里就会打砸。
+    每局开始随机抽一份，让同一套出招见到不同的桶。
+    """
+    paths = [BARREL_STATE_PATH] if include_original else []
+    prefix = "Champion.X.BonusBarrel.live"
+    for name in sorted(os.listdir(DATA_DIR)):
+        if name.startswith(prefix) and name.endswith(".state"):
+            paths.append(os.path.join(DATA_DIR, name))
+    if not paths:
+        paths.append(BARREL_STATE_PATH)
+    return paths
 # 接进连续闯关的木桶权重。左右都会出升龙，存档上加分 62300，高于固定套路的 30300。
 BARREL_MODEL_PATH = os.path.join(PROJECT_ROOT, "logs", "trained_models", "ppo_barrel_ryu.zip")
 
@@ -116,6 +133,26 @@ def _barrels_near(prev, img, ryu_x):
         if 8 < (ryu_x - x) < 50 and y >= 150:
             left_ground = True
     return right_falling, left_ground
+
+
+def _barrel_blobs(prev, img, ryu_x):
+    """和上一帧对不上的色块，相对人的位置。用来判断这一发升龙朝没朝向桶。"""
+    if prev is None or img is None or prev.shape != img.shape:
+        return []
+    diff = np.abs(img.astype(np.int16) - prev.astype(np.int16)).sum(axis=2)
+    mask = (diff > 110).astype(np.uint8)
+    mask[:40] = 0
+    mask[190:] = 0
+    mask[mask.sum(axis=1) > 50] = 0
+    count, _, stats, centroids = cv2.connectedComponentsWithStats(mask, 8)
+    found = []
+    for i in range(1, count):
+        _, _, width, height, area = stats[i]
+        if not (40 <= area <= 4000 and height >= 8 and width <= 90):
+            continue
+        x, y = centroids[i]
+        found.append((float(x - ryu_x), float(y), int(area)))
+    return found
 
 
 class BonusRoutine:
@@ -812,7 +849,7 @@ class SFighterCustomWrapper(gym.Wrapper):
         return self._barrel_policy
 
     def _play_barrel_stage(self):
-        """用木桶模型打完这一关。一步的按键长度和训练相同：走路 4 帧，升龙 6 帧。
+        """用木桶模型打完这一关。一步的长度和训练相同：走路 4 帧，升龙等到落地。
 
         观测也按训练那条路来。进关时用当前画面复制满 5 帧，之后每个模型动作只采最后一帧。
         对战用的运动帧先挪开，打完再放回去，避免两边的时间间隔混在一起。
@@ -823,6 +860,18 @@ class SFighterCustomWrapper(gym.Wrapper):
         self._motion_frames = collections.deque(maxlen=5)
         self.frame_stack = collections.deque(maxlen=self.stack_size)
         try:
+            # 飞入动画时关卡号已经是木桶，人还在画面外。
+            # 桶的落点要等人站稳才分开。过场里就出招，模型看到的是飞入，不是训练时的开局。
+            # 原来那份存档进来时人已经站着，这里不会多等。
+            for _ in range(600):
+                info = self.env.unwrapped.data.lookup_all()
+                if int(info.get("stage", BONUS_BARREL)) != BONUS_BARREL:
+                    break
+                if int(info.get("agent_x", 0)) > 0 and int(info.get("agent_y", 0)) >= BARREL_GROUND_Y:
+                    break
+                if self.render_enabled:
+                    self.render_game()
+                self.env.step(NO_OP_ACTION)
             first = self._process_frame(self.env.render())
             self.frame_stack.extend([first] * self.stack_size)
             info = self.env.unwrapped.data.lookup_all()
@@ -849,6 +898,27 @@ class SFighterCustomWrapper(gym.Wrapper):
                     gate._observe_move(info)
                     if int(info.get("stage", BONUS_BARREL)) != BONUS_BARREL:
                         left = True
+                        break
+                # 训练里升龙这一步会等到落地。这里同样等完，模型看到的才是落地后的画面。
+                if not left and gate._move is not None:
+                    for _ in range(BARREL_MOVE_HOLD_FRAMES):
+                        if self.render_enabled:
+                            self.render_game()
+                        obs, _, _, _, info = self.env.step(NO_OP_ACTION.copy())
+                        gate._observe_move(info)
+                        if int(info.get("stage", BONUS_BARREL)) != BONUS_BARREL:
+                            left = True
+                            break
+                        if gate._move is None:
+                            break
+                if not left and gate._attack_pressed(frames) and gate._move is None:
+                    for _ in range(BARREL_SCORE_SETTLE_FRAMES):
+                        if self.render_enabled:
+                            self.render_game()
+                        obs, _, _, _, info = self.env.step(NO_OP_ACTION.copy())
+                        if int(info.get("stage", BONUS_BARREL)) != BONUS_BARREL:
+                            left = True
+                            break
                 if obs is not None:
                     self.frame_stack.append(self._process_frame(obs))
                 stage = int(info.get("stage", BONUS_BARREL))
@@ -1022,28 +1092,51 @@ BARREL_LIGHT_PUNCH_STATUS = 522
 BARREL_SPECIAL_STATUS = 524
 BARREL_GROUND_Y = 190
 BARREL_GROUND_SPECIAL_FRAMES = 40
-# 打空一次扣 1。轻拳、波动拳扣 2，比打空更亏。
+# 打空一次扣 1，记在发出这下升龙的同一步。扣到 4 和 8 时，扣分落在落地后的另一步，
+# 模型只少挥几下，过关奖励丢了，并没有改成走位。打中一千分仍是 10，比打空划算。
 BARREL_WHIFF_PENALTY = 1.0
 BARREL_WRONG_MOVE_PENALTY = 2.0
 # 每一千分给 10。随机出手一局大约一万七千分，同时打空、发错和罚站大约扣 76。
 # 按每一千分给 1 算，加分只有 17，干站着只扣大约 38。给 10 之后出手才盖过扣分。
 BARREL_SCORE_SCALE = 0.01
-# 这一发升龙和上一发朝向相反、而且打中时，这一下的分数再给一倍。
-# 三成太少，策略还没抽到朝左就锁死在朝右。翻倍之后，交替打同一只桶比单边多一倍分。
-BARREL_TURN_BONUS = 1.0
+# 朝反方向打中不再加分。加分会让模型先朝没有桶的一侧挥一下，只为了换边。
+BARREL_TURN_BONUS = 0.0
 # 收招没完就再按，这一下被吃掉。只轻轻扣一点，避免完全不出手比乱按更赚。
 BARREL_BLOCKED_PENALTY = 0.05
-# 游戏大约 60 帧为 1 秒。第 1 秒桶还没下来，不罚。从第 2 秒起，这一秒里分没涨就扣。
+# 游戏大约 60 帧为 1 秒。站在落点下等桶是该做的事，不再因为这一秒没加分而扣。
 BARREL_SECOND_FRAMES = 60
-BARREL_IDLE_SECOND_PENALTY = 1.0
+BARREL_IDLE_SECOND_PENALTY = 0.0
+# 画面差出来的色块对不准「这一下会不会打中」。
+# 用它来扣分会把已经打穿的存档一起罚掉，所以先记着，不扣。
+BARREL_UNAIMED_PENALTY = 0.0
+# 被桶打倒是 526。扣 8 分时，另外两份已经清完的存档在两万五千步里就丢了过关奖励，
+# 这份没清完的也没有因此清完，所以先不扣。状态仍记着，确认新的扣分值再打开。
+BARREL_KNOCKDOWN_STATUS = 526
+BARREL_KNOCKDOWN_PENALTY = 0.0
+# 连续几帧都在往下掉的色块，外推落到地面的位置。人还没走到拳头范围，势是剩下的距离。
+# 已经在范围内，或没有这种桶，势是 0。每步用和 PPO 相同的 γ=0.99：γ×新势−旧势，只对同一个桶。
+# 走近几像素大约零点几分，低于打碎一个桶的 10，避免只走路不打。
+# 色块对不准「这一下会不会打中」，所以只鼓励走近，不拿它来扣出招。
+BARREL_APPROACH_SCALE = 0.06
+BARREL_APPROACH_MARGIN = 24.0
+BARREL_SHAPING_GAMMA = 0.99
+BARREL_SHAPING_CLIP = 0.5
+BARREL_FALL_MIN_SPEED = 0.35
+BARREL_TRACK_MIN_SAMPLES = 4
+BARREL_TRACK_MIN_FALLING = 3
+BARREL_TRACK_MATCH = 36.0
+BARREL_LAND_Y = 185.0
+BARREL_SAMPLE_FRAMES = 4
+# 升龙指令只有 6 帧，人要更晚才落地。这一步一直模拟到落地，打中和打空才记在出招的这一步上。
+BARREL_MOVE_HOLD_FRAMES = 96
+BARREL_SCORE_SETTLE_FRAMES = 12
 
 
 class BarrelBonusWrapper(SFighterCustomWrapper):
     """木桶专用的训练环境。画面处理跟对战一样，奖励改成实际加上的分数。
 
-    出招在外层锁成轻拳升龙。人还没回到可出招的站立，再按会被吃掉。
-    升龙打空要扣分。从第 2 秒起，一整秒里分数没涨也要扣分。
-    和上一发升龙朝向相反、而且打中的那一下，分数再给一倍。
+    出招在外层锁成轻拳升龙。升龙这一步要等到人落地再结束，打空记在这一步上。
+    桶连续往下掉时，走近落点有一小笔势。站在落点下等桶下来不扣分。
     """
 
     def reset(self, **kwargs):
@@ -1052,9 +1145,22 @@ class BarrelBonusWrapper(SFighterCustomWrapper):
         self._match_decided = False
         self._motion_frames = collections.deque(maxlen=5)
         # 木桶存档是模拟器内存快照，不是对战关那种 gzip。读进来之后直接灌进模拟器。
-        if not hasattr(self, "_barrel_state"):
-            with open(BARREL_STATE_PATH, "rb") as save:
-                self._barrel_state = save.read()
+        # 实战截下来的开局和原始存档放在一起，每局随机抽一份。
+        if not hasattr(self, "_barrel_library"):
+            self._barrel_paths = barrel_state_paths(
+                include_original=not getattr(self, "live_only", False)
+            )
+            self._barrel_library = []
+            for path in self._barrel_paths:
+                with open(path, "rb") as save:
+                    self._barrel_library.append(save.read())
+        forced = getattr(self, "force_barrel_index", None)
+        if forced is None:
+            index = random.randrange(len(self._barrel_library))
+        else:
+            index = int(forced) % len(self._barrel_library)
+        self._barrel_state = self._barrel_library[index]
+        self._barrel_state_name = os.path.basename(self._barrel_paths[index])
         self.env.reset(**kwargs)
         emulator = self.env.unwrapped.em
         emulator.set_state(self._barrel_state)
@@ -1074,6 +1180,14 @@ class BarrelBonusWrapper(SFighterCustomWrapper):
         # 第 1 秒结束时的分数。用来判断接下来每一秒有没有打出伤害。
         self._frames = 0
         self._second_score = self._score_at_reset
+        # 上一帧原始画面。和当前帧对一下，才知道桶在人的哪一侧。
+        self._aim_prev = None
+        self._down = False
+        self._tracks = []
+        self._next_track = 1
+        self._track_prev = None
+        self._since_sample = 0
+        self._approach = None
         return self._stack_observation(), info
 
     @staticmethod
@@ -1088,8 +1202,8 @@ class BarrelBonusWrapper(SFighterCustomWrapper):
         return gate
 
     def _attack_pressed(self, action):
-        """这 4 帧里有没有按下轻拳。只有升龙的最后一帧会按。"""
-        return any(int(frame[BUTTON_X]) for frame in action)
+        """这几帧里有没有按下轻拳或中拳。只有升龙的最后一帧会按。"""
+        return any(int(frame[BUTTON_X]) or int(frame[BUTTON_Y]) for frame in action)
 
     def _shoryuken_ready(self, info):
         """只有站在地上、没有别的招没收完，升龙指令才会被游戏收成升龙。"""
@@ -1100,6 +1214,25 @@ class BarrelBonusWrapper(SFighterCustomWrapper):
     def _dp_forward(self, action):
         """升龙第一帧按住的就是朝向。朝左是左键，否则是朝右。"""
         return BUTTON_LEFT if int(action[0][BUTTON_LEFT]) else BUTTON_RIGHT
+
+    def _shoryuken_aimed(self, info, forward, screen):
+        """这一侧看得到正在动的桶，才算出手对准了。
+
+        上一手开始时的画面和现在这一帧对一下。两帧没差别，说明桶还没动到能打的位置。
+        出生点上桶在身前，朝左打会挥空。朝右要身前有色块，朝左要左侧有色块。
+        还没有上一帧，或者画面上没有色块，不罚。
+        """
+        prev = self._aim_prev
+        ax = int(info.get("agent_x", 0))
+        rx = 73 + (ax - 205) * (10 / 15.0)
+        found = _barrel_blobs(prev, screen, rx)
+        if not found:
+            return True
+        # 看离人最近的那一块。身前的桶朝左打会空，左侧近处的桶朝右打也会空。
+        dx, y, _area = min(found, key=lambda blob: abs(blob[0]))
+        if forward == BUTTON_RIGHT:
+            return -15 <= dx <= 45 and 45 <= y <= 175
+        return -60 <= dx <= -8 and y >= 50
 
     def _begin_move(self, info, forward):
         # 和上一发朝向不同，这一下打中的分才再给一倍。第一发没有上一发，不加成。
@@ -1123,6 +1256,7 @@ class BarrelBonusWrapper(SFighterCustomWrapper):
         self._move["frames"] += 1
         if height < BARREL_GROUND_Y:
             self._move["air"] = True
+        # 轻拳和中拳打空都是 522。升龙没做成、只挥出一拳时走这条。
         if status == BARREL_LIGHT_PUNCH_STATUS:
             self._move["light"] = True
         kind = None
@@ -1174,47 +1308,236 @@ class BarrelBonusWrapper(SFighterCustomWrapper):
             return BARREL_IDLE_SECOND_PENALTY
         return 0.0
 
+    def _sample_tracks(self, info):
+        """隔几帧看一次往下掉的色块，外推它会落在画面的哪一列。
+
+        桶的色块不是每帧都对得上，漏一两拍还留着这条轨迹，按上次的速度去对位置。
+        停在原地的闪烁不算桶，漏一拍就丢掉。
+        """
+        screen = self.env.render()
+        prev = self._track_prev
+        self._track_prev = None if screen is None else np.array(screen, copy=True)
+        ax = int(info.get("agent_x", 0))
+        rx = 73 + (ax - 205) * (10 / 15.0)
+        interval = max(int(self._since_sample), 1)
+        self._since_sample = 0
+        blobs = _barrel_blobs(prev, screen, rx)
+        points = [(rx + dx, y) for dx, y, _area in blobs]
+        for track in self._tracks:
+            track["pred_x"] = track["x"] + track["vx"] * interval
+            track["pred_y"] = track["y"] + track["vy"] * interval
+            track["miss"] = track.get("miss", 0) + 1
+        used = set()
+        for tx, ty in points:
+            best_i = None
+            best_d = BARREL_TRACK_MATCH
+            for i, track in enumerate(self._tracks):
+                if i in used:
+                    continue
+                gap = abs(track["pred_x"] - tx) + abs(track["pred_y"] - ty)
+                if gap < best_d:
+                    best_d = gap
+                    best_i = i
+            if best_i is None:
+                self._tracks.append({
+                    "id": self._next_track,
+                    "x": float(tx),
+                    "y": float(ty),
+                    "vx": 0.0,
+                    "vy": 0.0,
+                    "samples": 1,
+                    "falling": 0,
+                    "miss": 0,
+                    "pred_x": float(tx),
+                    "pred_y": float(ty),
+                })
+                self._next_track += 1
+                continue
+            used.add(best_i)
+            track = self._tracks[best_i]
+            track["vx"] = (float(tx) - track["x"]) / interval
+            track["vy"] = (float(ty) - track["y"]) / interval
+            track["x"] = float(tx)
+            track["y"] = float(ty)
+            track["miss"] = 0
+            track["samples"] += 1
+            if track["vy"] >= BARREL_FALL_MIN_SPEED:
+                track["falling"] += 1
+            else:
+                # 中间一拍速度不对，不要把已经在掉的桶整段丢掉。
+                track["falling"] = max(0, track["falling"] - 1)
+        kept = []
+        for i, track in enumerate(self._tracks):
+            if i in used or track.get("miss", 0) == 0 and track["samples"] == 1:
+                kept.append(track)
+                continue
+            if i in used:
+                kept.append(track)
+                continue
+            # 已经在往下掉的桶，漏几拍还按速度往前送。原地闪烁漏一拍就不要了。
+            limit = 3 if track["falling"] >= 1 else 1
+            if track["miss"] > limit or track["y"] > BARREL_LAND_Y + 8:
+                continue
+            track["x"] = track["pred_x"]
+            track["y"] = track["pred_y"]
+            kept.append(track)
+        self._tracks = kept
+        self._approach = self._approach_target(rx)
+
+    def _approach_target(self, rx):
+        """最近一只要落到地面的桶。已经在拳头范围内，距离记 0。"""
+        best = None
+        for track in self._tracks:
+            if track["samples"] < BARREL_TRACK_MIN_SAMPLES or track["falling"] < BARREL_TRACK_MIN_FALLING:
+                continue
+            vy = track["vy"]
+            if vy < BARREL_FALL_MIN_SPEED:
+                continue
+            time_to_land = (BARREL_LAND_Y - track["y"]) / vy
+            if not 0 < time_to_land < 80:
+                continue
+            landing = track["x"] + track["vx"] * time_to_land
+            if not 0 <= landing <= 320:
+                continue
+            previous = track.get("landing")
+            if previous is None:
+                track["landing"] = landing
+                track["stable"] = 1
+                continue
+            # 落点突然跳很远，多半是色块对错了，这一拍不拿来改势。
+            if abs(landing - previous) > 30:
+                landing = previous
+            else:
+                landing = 0.6 * previous + 0.4 * landing
+                track["stable"] = track.get("stable", 1) + 1
+            track["landing"] = landing
+            if track.get("stable", 0) < 2:
+                continue
+            excess = max(0.0, abs(landing - rx) - BARREL_APPROACH_MARGIN)
+            # 更靠近地面的那只优先。同高度时选离人更近的。
+            rank = (track["y"], -excess)
+            if best is None or rank > best[0]:
+                best = (rank, track["id"], excess)
+        if best is None:
+            return None
+        return best[1], best[2]
+
+    def _approach_shaping(self, before):
+        """同一个桶的落点更近才有势。桶消失或换了一只，这一步不加不扣。"""
+        after = self._approach
+        if before is None or after is None or before[0] != after[0]:
+            return 0.0
+        phi = -BARREL_APPROACH_SCALE * before[1]
+        phi_next = -BARREL_APPROACH_SCALE * after[1]
+        shaped = BARREL_SHAPING_GAMMA * phi_next - phi
+        return float(np.clip(shaped, -BARREL_SHAPING_CLIP, BARREL_SHAPING_CLIP))
+
+    def _advance_frame(self, frame_action):
+        """走一帧模拟器。升龙打空、被打倒这些都在这一帧里结算。"""
+        if self.render_enabled:
+            self.render_game()
+        obs, _, _, _, info = self.env.step(frame_action)
+        penalty = self._observe_move(info)
+        penalty += self._idle_second_penalty(info)
+        status = int(info.get("agent_status", 0))
+        if status == BARREL_KNOCKDOWN_STATUS and not self._down:
+            penalty += BARREL_KNOCKDOWN_PENALTY
+            self._down = True
+        elif status != BARREL_KNOCKDOWN_STATUS:
+            self._down = False
+        if self._boost_frames > 0:
+            tick = int(info.get("score", self._boost_from))
+            late = max(0, tick - self._boost_from)
+            self._boost_from = tick
+            if 0 < late <= 4000:
+                penalty -= late * BARREL_SCORE_SCALE * BARREL_TURN_BONUS
+            self._boost_frames -= 1
+        self._since_sample += 1
+        self._decision_frames = getattr(self, "_decision_frames", 0) + 1
+        if self._since_sample >= BARREL_SAMPLE_FRAMES:
+            self._sample_tracks(info)
+        stage = int(info.get("stage", BONUS_BARREL))
+        return obs, info, penalty, stage != BONUS_BARREL
+
+    def _hold_until_landed(self):
+        """升龙发出去之后继续空按，直到这一下落地或确认没打出去。返回多出来的扣分。"""
+        penalty = 0.0
+        done = False
+        obs = None
+        info = self.env.unwrapped.data.lookup_all()
+        if self._move is None:
+            return obs, info, penalty, done
+        for _ in range(BARREL_MOVE_HOLD_FRAMES):
+            obs, info, extra, done = self._advance_frame(NO_OP_ACTION.copy())
+            penalty += extra
+            if done or self._move is None:
+                break
+        return obs, info, penalty, done
+
     def step(self, action):
-        """一个模型动作仍是 4 帧按键。分数照加，打空和不是升龙的出招要扣。"""
+        """走路仍是 4 帧。升龙要等到落地，打中的分和打空都记在这一步。"""
         self.elapsed_steps += 1
         info = self.env.unwrapped.data.lookup_all()
         penalty = 0.0
-        if self._attack_pressed(action) and not self._shoryuken_ready(info):
+        screen = self.env.render()
+        before = self._approach
+        frames = list(action)
+        attack = self._attack_pressed(frames)
+        if attack and not self._shoryuken_ready(info):
             # 收招没完就再按，方向键会接成波动拳，拳键会变成轻拳。这一下直接不送。
-            action = [NO_OP_ACTION.copy() for _ in range(len(action))]
+            frames = [NO_OP_ACTION.copy() for _ in range(len(frames))]
             penalty += BARREL_BLOCKED_PENALTY
-        elif self._attack_pressed(action):
-            self._begin_move(info, self._dp_forward(action))
-        for frame_action in action:
-            # 观看时每一帧都画出来、把声音送出去，速度跟对战演示一样是原速。
-            if self.render_enabled:
-                self.render_game()
-            obs, _, _, _, info = self.env.step(frame_action)
-            penalty += self._observe_move(info)
-            penalty += self._idle_second_penalty(info)
-            # 换边升龙打中后晚到的分，单次不超过四千，避免把过关的时间奖励也乘进去。
-            if self._boost_frames > 0:
-                tick = int(info.get("score", self._boost_from))
-                late = max(0, tick - self._boost_from)
-                self._boost_from = tick
-                if 0 < late <= 4000:
-                    penalty -= late * BARREL_SCORE_SCALE * BARREL_TURN_BONUS
-                self._boost_frames -= 1
+            attack = False
+        elif attack:
+            forward = self._dp_forward(frames)
+            # 旧的身前色块规则对不准会不会打中，这里的扣分是 0，不靠它拦招。
+            if not self._shoryuken_aimed(info, forward, screen):
+                penalty += BARREL_UNAIMED_PENALTY
+            self._begin_move(info, forward)
+        # 存这一手开始前的画面。下一步用它和最新画面相减，桶的移动才看得出来。
+        self._aim_prev = None if screen is None else np.array(screen, copy=True)
+        obs = None
+        done = False
+        self._decision_frames = 0
+        for frame_action in frames:
+            obs, info, extra, done = self._advance_frame(frame_action)
+            penalty += extra
+            if done:
+                break
+        landed = False
+        if not done and self._move is not None:
+            held_obs, info, extra, done = self._hold_until_landed()
+            penalty += extra
+            if held_obs is not None:
+                obs = held_obs
+            landed = self._move is None
+        elif attack and not done:
+            landed = True
+        if landed and not done:
+            # 落地后分数有时晚几帧才跳，这几帧仍算这一下，不让模型在半空里再选动作。
+            for _ in range(BARREL_SCORE_SETTLE_FRAMES):
+                obs, info, extra, done = self._advance_frame(NO_OP_ACTION.copy())
+                penalty += extra
+                if done:
+                    break
+        if obs is None:
+            obs = self.env.render()
         obs = self._process_frame(obs)
         self.frame_stack.append(obs)
         if "score" not in info or "stage" not in info:
             info = self.env.unwrapped.data.lookup_all()
         score = int(info.get("score", self._prev_score))
-        # 结算偶尔会把分数一次加上，不会往下掉。往下的跳动不当成惩罚。
         gained_now = max(0, score - self._prev_score)
         self._prev_score = score
-        # 打中按每一千分 10 计。方向换边而且打中的那一发，结算时再给一倍。
-        reward = gained_now * BARREL_SCORE_SCALE - self.time_penalty - penalty
+        shaping = self._approach_shaping(before)
+        reward = gained_now * BARREL_SCORE_SCALE - self.time_penalty - penalty + shaping
         stage = int(info.get("stage", BONUS_BARREL))
-        # 木桶结束、游戏切去下一场时，这一局的分已经加完。
         done = stage != BONUS_BARREL
         truncated = (not done) and self.elapsed_steps >= self.max_episode_steps
         info["barrel_gained"] = score - self._score_at_reset
+        info["barrel_state"] = getattr(self, "_barrel_state_name", "")
+        info["barrel_shaping"] = shaping
+        info["barrel_frames"] = int(getattr(self, "_decision_frames", 0))
         return self._stack_observation(), float(reward), done, truncated, info
 
 
@@ -1262,8 +1585,9 @@ class SFighterActionWrapper(gym.ActionWrapper):
 
 
 def barrel_action_sequences():
-    """木桶模型的五个动作。走路按住 4 帧。升龙是 6 帧。
+    """木桶模型的五个动作。走路按住 4 帧。升龙是 6 帧，只用轻拳。
 
+    轻升龙够得到拳头范围里的桶。中升龙位移更大，但训练后模型不再走路，桶也没多打碎。
     脸还朝另一边时，只按前、下、下前会被收成轻拳或波动拳。
     先朝目标方向站两帧把脸转过来，再接前、下、下前、下前加轻拳。
     已经面朝目标时，多出来的两帧只是按住前，升龙一样出得来。
@@ -1297,7 +1621,7 @@ def barrel_action_sequences():
 class BarrelActionWrapper(gym.ActionWrapper):
     """木桶只允许五件事：站着等、往左走、往右走、朝左轻拳升龙、朝右轻拳升龙。
 
-    打碎桶的招式锁成轻拳升龙。模型要学的是站到桶前面，以及等它落到拳头高度再发。
+    模型要学的是先走到桶前面，等桶进了这一侧再出招。
     连续闯关打这一关时用的也是这套按键，避免训练和演示的出招长度不一致。
     """
 

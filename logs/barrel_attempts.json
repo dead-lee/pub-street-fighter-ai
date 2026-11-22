@@ -1,0 +1,87 @@
+{
+  "baseline": {
+    "path": "logs/BARREL_BASELINE/ppo_barrel_ryu_best.zip",
+    "source": "logs/BARREL_FOCUS/TRAINING/ppo_barrel_ryu_best.zip",
+    "saved_at_timesteps": 1800000,
+    "resumed_from": "logs/BARREL_AIM/TRAINING/ppo_barrel_ryu_best.zip",
+    "scores": {"live1": 24500, "live2": 67400, "live3": 65100},
+    "clears": 2,
+    "note": "三份实战开局里同时保住两份清关的最好结果。live1 计时结束还剩桶。演示用的仍是 logs/trained_models/ppo_barrel_ryu.zip，不是这一份。"
+  },
+  "shipped_demo": {
+    "path": "logs/trained_models/ppo_barrel_ryu.zip",
+    "scores": {"original": 62300, "live1": 27800, "live2": 28000, "live3": 64400},
+    "note": "连续闯关仍加载这一份。原存档三局评估都是 62300。"
+  },
+  "kept_weights": "已提交过的各轮 best/final 不动。下面这些后来的尝试只留 training_config.json，中间权重已删。",
+  "attempts": [
+    {
+      "dir": "logs/BARREL_AIM",
+      "scores": {"live1": 19500, "live2": 67400, "live3": 65100},
+      "note": "1.7M 的 best 是 FOCUS 的起点。2.0M 的 final 掉了清关，不续。"
+    },
+    {
+      "dir": "logs/BARREL_FOCUS",
+      "scores": {"live1": 24500, "live2": 67400, "live3": 65100},
+      "note": "best 已复制到 BARREL_BASELINE。final 在 2.0M 把两份清关打掉了，权重已删。"
+    },
+    {
+      "dir": "logs/BARREL_WHIFF",
+      "scores_at_25000_and_50000": {"live1": 19500, "live2": 34000, "live3": 65100},
+      "note": "打空扣分从 1 提到 4，从 FOCUS 续训。live2 的过关奖励没了，没有学会往右走。"
+    },
+    {
+      "dir": "logs/BARREL_WHIFF8",
+      "scores": {
+        "25000": {"live1": 19500, "live2": 34000, "live3": 65100},
+        "50000": {"live1": 24400, "live2": 26900, "live3": 65100},
+        "75000": {"live1": 24400, "live2": 26900, "live3": 65100}
+      },
+      "note": "打空扣分提到 8，同样从 FOCUS 续训。7.5 万步停住，比基线差。"
+    },
+    {
+      "dir": "logs/BARREL_LANDING",
+      "scores": {
+        "best_at_200000": {"live1": 14200, "live2": 16900, "live3": 17800},
+        "final_at_500000": {"live1": 8600, "live2": 7900, "live3": 17800}
+      },
+      "note": "落点势从头训练。没有任何一份清关，低于基线。"
+    },
+    {
+      "dir": "logs/BARREL_DOWN",
+      "note": "被桶打倒扣 8 分。两万五千步里两份清关就没了，live1 也没有因此清完。"
+    },
+    {
+      "dir": "logs/BARREL_LIVE1",
+      "note": "八个环境只打 live1。最高到过 30100，大约 15 个桶，另外两份的过关奖励会掉。"
+    },
+    {
+      "dir": "logs/BARREL_HEAD",
+      "note": "冻住画面特征、只训动作层。没有超过基线。"
+    },
+    {
+      "dir": "logs/BARREL_ADAPT",
+      "note": "从演示模型续训，没有换成演示模型。"
+    },
+    {
+      "dir": "logs/BARREL_FRESH2",
+      "note": "从头训练，熵系数 0.01。没有留下高于基线的评估。"
+    },
+    {
+      "dir": "logs/BARREL_REACH",
+      "note": "七个动作，含中升龙。旧的五动作模型装不回去。没有三份同时清关。"
+    },
+    {
+      "dir": "logs/BARREL_LIVE",
+      "note": "实战开局上的长训练。续训把原存档和 live3 的过关奖励换没了，没有四份同时清关。"
+    },
+    {
+      "dir": "logs/BARREL_WAIT",
+      "note": "开局多等。没有超过基线。"
+    },
+    {
+      "dir": "logs/BARREL_TEMP",
+      "note": "中途试验目录，没有采用。"
+    }
+  ]
+}

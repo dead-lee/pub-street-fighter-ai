@@ -6,7 +6,7 @@
     "resumed_from": "logs/BARREL_AIM/TRAINING/ppo_barrel_ryu_best.zip",
     "scores": {"live1": 24500, "live2": 67400, "live3": 65100},
     "clears": 2,
-    "note": "三份实战开局里同时保住两份清关的最好结果。live1 计时结束还剩桶。演示用的仍是 logs/trained_models/ppo_barrel_ryu.zip，不是这一份。"
+    "note": "三份实战开局里同时保住两份清关的最好结果。live1 计时结束还剩桶。这份 zip 只留在本机，不进仓库。演示用的仍是 logs/trained_models/ppo_barrel_ryu.zip。"
   },
   "shipped_demo": {
     "path": "logs/trained_models/ppo_barrel_ryu.zip",

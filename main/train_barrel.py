@@ -1,9 +1,11 @@
-"""用和对战相同的 PPO、画面和网络，只在滚木桶上训练。
+"""在滚木桶上训练。
 
-出招锁成轻拳升龙。模型要先对准桶再出手，而不是按固定节拍左右轮流打。
-奖励是游戏实际加上的分数。升龙打空要扣分，桶不在这一侧还出招扣得更多。
+--state-obs 时，模型看到桶的位置和速度，网络是两层全连接。
+还在空中的桶用轻拳升龙，落地后横着滚的桶可以用波动拳。
+不加这个参数时，仍用原来的运动图和五动作卷积模型。
+奖励是游戏实际加上的分数。打空要扣分，但扣得比打碎一只桶少。
 等人站稳、以及站在落点下等桶下来，都不扣分。
-对战默认 12 关各 64 个环境。木桶只有这一关，默认 8 个并行模拟器，把核留给网络更新。
+木桶只有这一关，默认 8 个并行模拟器。
 """
 
 from __future__ import annotations
@@ -180,6 +182,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--live-only", action="store_true",
         help="只在实战截下来的木桶开局上训练和评估，不用原来那一份存档。",
     )
+    parser.add_argument(
+        "--state-obs", action="store_true",
+        help="用桶的位置训练两层全连接网络，并允许左右波动拳。不看画面卷积。",
+    )
     parser.add_argument("--resume-model", type=Path)
     parser.add_argument(
         "--eval-only", type=Path,
@@ -312,15 +318,23 @@ def play_barrel_episode(model: PPO, env) -> int:
 class BarrelScoreCallback(BaseCallback):
     """隔一段用当前策略打几局，记下实际得分。比固定套路高就另存。"""
 
-    def __init__(self, eval_env, eval_every: int, eval_episodes: int, best_path: Path):
+    def __init__(self, eval_env, eval_every: int, eval_episodes: int, best_path: Path,
+                 eval_log: Path | None = None):
         super().__init__()
         self.eval_env = eval_env
         self.eval_every = eval_every
         self.eval_episodes = eval_episodes
         self.best_path = best_path
+        self.eval_log = eval_log
         self.best_score = -1
         # 单份存档加到五万以上，才算这一关的桶清完、时间奖励也拿到了。
         self.best_clears = -1
+
+    def _say(self, line: str) -> None:
+        print(line, flush=True)
+        if self.eval_log is not None:
+            with self.eval_log.open("a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
 
     def _on_step(self) -> bool:
         if self.num_timesteps == 0 or self.num_timesteps % self.eval_every != 0:
@@ -339,20 +353,18 @@ class BarrelScoreCallback(BaseCallback):
                 scores.append(play_barrel_episode(self.model, self.eval_env))
                 names.append(os.path.basename(path))
             bonus.force_barrel_index = None
-            print(
+            self._say(
                 f"Barrel eval at {self.num_timesteps:,}: "
-                + " ".join(f"{name}={score}" for name, score in zip(names, scores)),
-                flush=True,
+                + " ".join(f"{name}={score}" for name, score in zip(names, scores))
             )
         else:
             scores = [
                 play_barrel_episode(self.model, self.eval_env)
                 for _ in range(self.eval_episodes)
             ]
-            print(
+            self._say(
                 f"Barrel eval at {self.num_timesteps:,}: "
-                f"scores={scores} mean={sum(scores) / len(scores):.0f}",
-                flush=True,
+                f"scores={scores} mean={sum(scores) / len(scores):.0f}"
             )
         mean_score = sum(scores) / len(scores)
         clears = sum(1 for score in scores if score >= 50000)
@@ -362,10 +374,9 @@ class BarrelScoreCallback(BaseCallback):
             epsilon_box = getattr(self.model, "_explore_eps", None)
             if epsilon_box is not None:
                 epsilon_box[0] = min(epsilon_box[0], 0.02)
-            print(
+            self._say(
                 f"Annealed barrel exploration at {self.num_timesteps:,}: "
-                f"best layout {max(scores)}",
-                flush=True,
+                f"best layout {max(scores)}"
             )
         if clears > self.best_clears or (
             clears == self.best_clears and mean_score > self.best_score
@@ -373,10 +384,9 @@ class BarrelScoreCallback(BaseCallback):
             self.best_clears = clears
             self.best_score = mean_score
             self.model.save(self.best_path)
-            print(
+            self._say(
                 f"New best barrel model: {self.best_path}.zip "
-                f"({mean_score:.0f}, clears={clears})",
-                flush=True,
+                f"({mean_score:.0f}, clears={clears})"
             )
         return True
 
@@ -399,6 +409,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.watch and not args.eval_only:
         raise ValueError("--watch only applies to --eval-only")
+    if args.freeze_features and args.state_obs:
+        raise ValueError("--freeze-features only applies to the image model")
     if args.eval_only:
         env = make_barrel_env(
             seed=args.seed,
@@ -406,6 +418,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             render=args.watch,
             realtime=args.watch,
             live_only=args.live_only,
+            state_obs=args.state_obs,
         )()
         try:
             model = PPO.load(str(args.eval_only), device=device)
@@ -437,8 +450,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         **{key: (str(value) if isinstance(value, Path) else value)
            for key, value in vars(args).items()},
         "device_resolved": device,
-        "observation_mode": "motion_rgb",
-        "actions": "wait_left_right_light_shoryuken",
+        "observation_mode": "barrel_state" if args.state_obs else "motion_rgb",
+        "actions": (
+            "wait_walk_light_dp_medium_hadouken" if args.state_obs
+            else "wait_left_right_light_shoryuken"
+        ),
         "reward": (
             f"score_delta * {BARREL_SCORE_SCALE:g} - time_penalty "
             f"- whiff * {BARREL_WHIFF_PENALTY:g} - wrong_move - blocked"
@@ -467,6 +483,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 time_penalty=args.time_penalty,
                 live_only=args.live_only,
                 barrel_index=focus_plan[worker],
+                state_obs=args.state_obs,
             )
             for worker in range(args.num_envs)
         ]
@@ -475,6 +492,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         seed=args.seed + 10_000,
         time_penalty=args.time_penalty,
         live_only=args.live_only,
+        state_obs=args.state_obs,
     )()
     model: PPO | None = None
     completed = False
@@ -491,17 +509,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             reset_num_timesteps = False
         else:
+            if args.state_obs:
+                policy_name = "MlpPolicy"
+                # 输入只有二十几个数。两层就够把「桶在哪、往哪滚」映到走或出招。
+                policy_kwargs = {"net_arch": dict(pi=[128, 128], vf=[128, 128])}
+            else:
+                policy_name = "CnnPolicy"
+                policy_kwargs = {
+                    "features_extractor_kwargs": {
+                        "features_dim": args.features_dim,
+                    }
+                }
             model = PPO(
-                "CnnPolicy",
+                policy_name,
                 env,
                 device=device,
                 verbose=1,
                 seed=args.seed,
-                policy_kwargs={
-                    "features_extractor_kwargs": {
-                        "features_dim": args.features_dim,
-                    }
-                },
+                policy_kwargs=policy_kwargs,
                 **hyperparams,
             )
             reset_num_timesteps = True
@@ -521,6 +546,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 eval_every=args.checkpoint_timesteps,
                 eval_episodes=args.eval_episodes,
                 best_path=best_path,
+                eval_log=log_dir / "eval.log",
             ),
         ]
         print(

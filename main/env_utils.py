@@ -8,10 +8,13 @@ import os
 from pathlib import Path
 
 import cv2
+import gymnasium as gym
+import numpy as np
 import stable_retro as retro
 from stable_baselines3.common.monitor import Monitor
 
 from main.custom_wrappers import (
+    BARREL_STATE_DIM,
     BARREL_STATE_PATH,
     STATE_PATHS,
     BarrelActionWrapper,
@@ -106,9 +109,11 @@ def make_sfighter_env(seed=0, obs_size=84, use_monitor=False, render=False,
 
 def make_barrel_env(seed=0, obs_size=84, use_monitor=False, time_penalty=0.0005,
                     max_episode_steps=900, render=False, realtime=False,
-                    live_only=False, barrel_index=None):
-    """木桶训练用的环境工厂。观测和对战相同，出招只剩走位和轻拳升龙。
+                    live_only=False, barrel_index=None, state_obs=False):
+    """木桶训练用的环境工厂。
 
+    state_obs 时，观测是桶的位置和速度，出招含左右波动拳。
+    否则仍是和对战相同的运动图，旧的五动作模型还能直接打。
     一局大约 550 个动作就会切去下一场。900 是超时上限，正常在切场时结束。
     live_only 时不加载原来那份木桶存档，只练实战里截下来的开局。
     barrel_index 给定时，这个环境每次都从那一份开局打起。
@@ -136,6 +141,12 @@ def make_barrel_env(seed=0, obs_size=84, use_monitor=False, time_penalty=0.0005,
                 realtime=realtime,
             )
             env.live_only = live_only
+            env.state_obs = bool(state_obs)
+            if env.state_obs:
+                # 位置向量的每一维都压进这个范围，网络不用再看画面。
+                env.observation_space = gym.spaces.Box(
+                    low=-3.0, high=3.0, shape=(BARREL_STATE_DIM,), dtype=np.float32,
+                )
             # 指定某一份开局时，这个环境每次都打它，用来把梯度集中到还没清完的那份。
             if barrel_index is not None:
                 env.force_barrel_index = int(barrel_index)

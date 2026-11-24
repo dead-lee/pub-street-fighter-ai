@@ -32,8 +32,9 @@
 │   ├── env_utils.py             # ROM 配置与环境构建
 │   └── custom_wrappers.py       # 画面处理、动作映射、奖励与木桶规则
 ├── logs/
-│   └── trained_models/
-│       └── ppo_ryu.zip          # 对战模型权重
+│   ├── trained_models/
+│   │   └── ppo_ryu.zip          # 对战模型权重
+│   └── BARREL_FOCUS/TRAINING/ppo_barrel_ryu_best.zip  # 木桶对照模型里清关最好的一份
 ├── requirements.txt
 ├── LICENSE
 └── README.md

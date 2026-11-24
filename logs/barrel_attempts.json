@@ -1,12 +1,12 @@
 {
   "baseline": {
-    "path": "logs/BARREL_BASELINE/ppo_barrel_ryu_best.zip",
+    "path": "logs/BARREL_FOCUS/TRAINING/ppo_barrel_ryu_best.zip",
     "source": "logs/BARREL_FOCUS/TRAINING/ppo_barrel_ryu_best.zip",
     "saved_at_timesteps": 1800000,
     "resumed_from": "logs/BARREL_AIM/TRAINING/ppo_barrel_ryu_best.zip",
     "scores": {"live1": 24500, "live2": 67400, "live3": 65100},
     "clears": 2,
-    "note": "三份实战开局里同时保住两份清关的最好结果。live1 计时结束还剩桶。这份 zip 只留在本机，不进仓库。演示用的仍是 logs/trained_models/ppo_barrel_ryu.zip。"
+    "note": "三份实战开局里同时保住两份清关的最好结果。live1 计时结束还剩桶。仓库里留的是这一份 best。2.0M 的 final 把清关掉了，没有留下。"
   },
   "shipped_demo": {
     "path": "logs/trained_models/ppo_barrel_ryu.zip",
@@ -23,7 +23,7 @@
     {
       "dir": "logs/BARREL_FOCUS",
       "scores": {"live1": 24500, "live2": 67400, "live3": 65100},
-      "note": "best 已复制到 BARREL_BASELINE。final 在 2.0M 把两份清关打掉了，权重已删。"
+      "note": "best 在仓库里。final 在 2.0M 把两份清关打掉了，权重已删。"
     },
     {
       "dir": "logs/BARREL_WHIFF",

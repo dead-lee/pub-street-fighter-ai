@@ -59,7 +59,7 @@ def validate_rom() -> None:
 def make_sfighter_env(seed=0, obs_size=84, use_monitor=False, render=False,
                       initial_level=0, time_penalty=0.0005, render_skip=1,
                       reset_round=False, auto_reset=False, max_episode_steps=18000,
-                      realtime=False):
+                      realtime=False, record_path=None):
     """返回一个子进程能调用的环境工厂。ROM 要在父进程里先导入。
 
     realtime 只给观看用：全屏、原速、有声音。训练必须保持 False，
@@ -91,6 +91,7 @@ def make_sfighter_env(seed=0, obs_size=84, use_monitor=False, render=False,
                 env, obs_size=obs_size, render=render, initial_level=initial_level,
                 time_penalty=time_penalty, render_skip=render_skip, reset_round=reset_round,
                 max_episode_steps=max_episode_steps, realtime=realtime,
+                record_path=record_path,
             )
             # 把 27 个离散动作展开成手柄按键，顺序必须和已保存的模型一致。
             env = SFighterActionWrapper(env)

@@ -77,11 +77,18 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Play at original speed on a fullscreen window, with sound.",
     )
+    parser.add_argument(
+        "--record",
+        type=Path,
+        default=None,
+        help="With --realtime, also write the picture and sound to this mp4.",
+    )
     return parser.parse_args()
 
 
 def make_level_env(level: int, reset_round: bool,
-                   rendering: bool, render_skip: int, realtime: bool = False):
+                   rendering: bool, render_skip: int, realtime: bool = False,
+                   record_path: Path | None = None):
     """建一局从指定关卡存档开始的环境。level 从 1 数起。"""
     env = make_sfighter_env(
         seed=level,
@@ -93,6 +100,7 @@ def make_level_env(level: int, reset_round: bool,
         reset_round=reset_round,
         auto_reset=False,
         realtime=realtime,
+        record_path=None if record_path is None else str(record_path),
     )()
     return env
 
@@ -127,14 +135,16 @@ def play_match(env, model: PPO, obs):
 
 
 def play_continuous_arcade_run(model: PPO, rendering: bool,
-                               render_skip: int, realtime: bool = False) -> tuple[int, bool]:
+                               render_skip: int, realtime: bool = False,
+                               record_path: Path | None = None) -> tuple[int, bool]:
     """从第 1 关存档打起，之后都靠游戏自己换对手，不再读档。
 
     不在第 12 场结束。木桶、四大天王和结局都在后面。
     窗口一直开着，直到用户按 Esc 或把窗口关掉。
     """
-    env = make_level_env(1, False, rendering, render_skip, realtime)
+    env = make_level_env(1, False, rendering, render_skip, realtime, record_path)
     victories = 0
+    run_complete = False
     try:
         # 整趟闯关只有这一次读档。后面的关卡、地图、结局都是游戏内部推进的。
         obs, info = env.reset(seed=1)
@@ -149,9 +159,19 @@ def play_continuous_arcade_run(model: PPO, rendering: bool,
                 print("Match lost. The window stays open until it is closed.", flush=True)
             print("Advancing in the running game (no save-state reload)...", flush=True)
             advance = env.get_wrapper_attr("advance_to_next_match")
-            # 不设步数上限。下一场没来就是结局或游戏结束画面，继续播，不自己关窗口。
-            obs, info = advance(max_steps=None)
+            # 平时不设步数上限，窗口留给用户关。
+            # 录像打完 12 场之后，结局不再开下一场。播完这段过场就收片，避免窗口一直开着、文件写不完。
+            ending_limit = 24000 if record_path is not None and victories >= 12 else None
+            try:
+                obs, info = advance(max_steps=ending_limit)
+            except RuntimeError:
+                if ending_limit is None:
+                    raise
+                run_complete = True
+                print("Ending recorded. Closing the video.", flush=True)
+                break
             level += 1
+        return victories, run_complete
     finally:
         env.close()
 
@@ -191,8 +211,12 @@ def main() -> None:
         if args.load_level_saves
         else "continuous arcade from Level 1"
     )
+    if args.record is not None:
+        args.record = args.record.expanduser()
     if args.realtime:
         print("Playback: original speed, fullscreen, sound. Press Esc to quit.", flush=True)
+    if args.record is not None and not args.realtime:
+        raise ValueError("--record needs --realtime so the picture and sound stay in step")
     match_format = "single KO" if args.reset_round else "best-of-three"
     print(
         f"Testing {args.episodes} pass(es), levels 1-12, "
@@ -207,7 +231,7 @@ def main() -> None:
         print(f"\n=== {pass_name} {episode}/{args.episodes} ===")
         if not args.load_level_saves:
             victories, run_complete = play_continuous_arcade_run(
-                model, rendering, render_skip, args.realtime
+                model, rendering, render_skip, args.realtime, args.record
             )
             total_victories += victories
             # 输掉的那一关也算进分母，所以没打完时分母是胜场再加 1。

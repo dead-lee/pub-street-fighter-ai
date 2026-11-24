@@ -17,19 +17,18 @@
 │   └── scenario_full_frame.json # 游戏场景配置
 ├── main/                        # 训练与测试代码
 │   ├── train.py                 # 全关卡并行训练与续训
-│   ├── train_barrel.py          # 滚木桶的旧训练入口，当前基线不走这里
-│   ├── barrel_vision.py         # 木桶识别，每帧给出桶心
-│   ├── barrel_vision.pt         # 当前在用的识别权重
+│   ├── train_barrel.py          # 旧的滚木桶 PPO 训练入口，演示不走这里
+│   ├── barrel_vision.py         # 木桶识别，先找桶心，再确认是不是整桶
+│   ├── barrel_vision.pt         # 第一段：整屏上的桶心
+│   ├── barrel_crop.pt           # 第二段：原像素小块上确认整桶
 │   ├── train_barrel_vision.py   # 从现有权重接着学，不从头替换
 │   ├── test.py                  # 逐关测试、连续闯关、全屏原速演示
-│   ├── presenter.py             # 全屏画面和声音
+│   ├── presenter.py             # 全屏画面和声音，可同时录成有声的 mp4
 │   ├── env_utils.py             # ROM 配置与环境构建
 │   └── custom_wrappers.py       # 画面处理、动作映射、奖励与木桶规则
 ├── logs/
-│   ├── trained_models/
-│   │   ├── ppo_ryu.zip          # 对战模型权重
-│   │   └── ppo_barrel_ryu.zip   # 旧的滚木桶卷积权重，只留作对照
-│   └── events.out.tfevents.*    # 训练记录
+│   └── trained_models/
+│       └── ppo_ryu.zip          # 对战模型权重
 ├── requirements.txt
 ├── LICENSE
 └── README.md
@@ -89,10 +88,10 @@ python -m main.test --episodes 1 --no-load-level-saves
 全屏、原速、有声音的演示：
 
 ```bash
-python -m main.test --episodes 1 --no-load-level-saves --realtime
+python -m main.test --episodes 1 --no-load-level-saves --realtime --record ~/Desktop/sf2_arcade.mp4
 ```
 
-窗口按游戏原速播放，画面拉大后仍是一块块像素。画面铺满屏幕，但不是独占全屏，系统快捷键不会被吃掉。程序不会自己关窗口，看完后按 Esc 或关闭窗口退出。结算分数开始跳动 1 秒后，会点一次轻拳把后面的跳分跳过，胜利姿势、台词和世界地图仍会播放。
+窗口按游戏原速播放，画面拉大后仍是一块块像素。画面铺满屏幕，但不是独占全屏，系统快捷键不会被吃掉。录像先按整数倍最近邻放大再写入，颜色和单独打木桶的录像一致。不录像时程序不会自己关窗口，看完后按 Esc 或关闭窗口退出。带 `--record` 时，十二场打完并播过结局后会收好录像再退出。结算分数开始跳动 1 秒后，会点一次轻拳把后面的跳分跳过，胜利姿势、台词和世界地图仍会播放。
 
 ### 奖励关
 
@@ -102,17 +101,15 @@ python -m main.test --episodes 1 --no-load-level-saves --realtime
 | --- | --- |
 | 砸汽车 | 固定按键，可以打到 PERFECT |
 | 打砖墙 | 固定按键。存档上得分 544300 |
-| 滚木桶 | 规则基线，见下文。三份实战开局录像都是全破，加分 67600、65500、61600 |
+| 滚木桶 | 和三份实战存档同一套规则。两段识别确认整桶后用轻升龙打，三份加分 63000、63300、62700 |
 
-木桶现在的基线是 `BarrelBonusWrapper.rule_action`，不读 `ppo_barrel_ryu.zip`。识别用 `main/barrel_vision.py` 里的小网络，权重是 `main/barrel_vision.pt`。每帧给出最多 6 个桶心。认的是滑槽里的桶、顶上露出的一截、落地的圆脸。碎片、墙、火花和人的身体不是桶。认错了改权重，不在规则里把某一类误识别滤掉。
+连续闯关走到木桶时，不读存档，也不交给对战模型。用的是 `BarrelBonusWrapper.rule_action`。`main/barrel_vision.pt` 在整屏上找桶心，`main/barrel_crop.pt` 再看原像素上的一块，确认是整桶才留下。每帧最多 6 个桶心：滑槽里的桶、顶上露出的一截、落地的圆脸。碎片、墙、火花和人的身体不是桶。认错了改权重，不在规则里滤掉某一类。
 
-允许的动作只有七个：等、往左走、往右走、左轻拳升龙、右轻拳升龙、左中拳波动拳、右中拳波动拳。没有单独的轻拳。左右以头的中心为准，不用走到中间的那条压缩坐标。先走到画面中间再出手。第一发仍是开局专用的：桶心第一次落到打不中的高度，下一帧朝它滑来的方向出升龙。这一发在第一关和第三关打中，第二关打空。第一发之后，桶还停在最高点就升龙；已经离开滑槽往下掉、横向还够得着，按桶心在身体的哪一侧马上出升龙，不等到贴地。已经贴地、又滚出拳头范围，才用波动拳。
+先走到画面中间。出手只看最下面那只桶，左右按头的中心算。桶心在 80 到 140 时朝它出轻升龙；横向超过 45、拳头够不着，这一发是把身体朝桶滑近大约 10 像素。桶心低于 167 而且横向超过 45 时，先看后面两帧往哪边滚：朝人出升龙，远离出轻拳波动；不到 45 直接升龙。还停在头顶、没有往下掉的，升龙打在最高点。
 
-升龙的按键是前、下、下前、下前加轻拳，前面固定先按三帧前，用来把脸转过来。已经面朝这个方向时，这三帧仍会按出去。第二关第一发打空之后的那下破桶就是这样：人刚往右走过，下一发右升龙被游戏收成站立轻拳（状态 522），不是规则又选了一招轻拳。
+允许的动作是等、左右走、左右轻拳升龙、左右轻拳波动。升龙是前、下、下前、下前加轻拳；要转身时先朝目标按两帧。不要用 `train()` 覆盖 `barrel_vision.pt`。第二段用 `teach_crop()` 接着学，写回 `barrel_crop.pt` 前要核对：整桶和滑槽还在门槛上，碎片和火球在门槛下。
 
-`logs/trained_models/ppo_barrel_ryu.zip` 留作对照，连续闯关进木桶时 `_play_barrel_stage` 仍加载它。不要用 `train()` 覆盖 `barrel_vision.pt`。接着学用 `teach_fragments()`，学完要核对：误识别掉到门槛下，滑槽桶和圆脸还在门槛上。
-
-各轮的训练配置和最好、最终权重在 `logs/BARREL_*/`。`training_config.json` 里是那一轮的奖励和步数。`TRAINING/ppo_barrel_ryu_best.zip` 是评估最高的一版，`ppo_barrel_ryu_final.zip` 是训完时的权重。中途被停掉的两轮没有最终权重。每 10 万步的中间快照没有放进仓库，十轮合计约 8GB。
+规则里没写到的高度和距离，先问清再补，不要留成站着不动。
 
 常用测试参数如下：
 
@@ -126,6 +123,7 @@ python -m main.test --episodes 1 --no-load-level-saves --realtime
 | `--device auto/cpu/cuda/mps` | 选择模型推理设备 | `auto` |
 | `--speed N` | 通过减少显示帧数加快可视化；`--realtime` 时忽略 | `4` |
 | `--realtime` | 全屏、原速、有声音 | 关闭 |
+| `--record PATH` | 和 `--realtime` 一起用，把这场的画面和声音写成 mp4 | 不录 |
 
 ### 训练模型
 

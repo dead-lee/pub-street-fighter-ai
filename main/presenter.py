@@ -16,14 +16,27 @@
 """
 
 import time
+from pathlib import Path
 
 import numpy as np
+
+
+def _ffmpeg_tool():
+    """系统里没有 ffmpeg 时，用这台机器上能找到动态库的那一份。"""
+    import shutil
+    found = shutil.which("ffmpeg")
+    if found:
+        return found, None
+    studio = Path("/Applications/Studio 2.0/PhotoRealisticRenderer/mac/ffmpeg")
+    if studio.is_file():
+        return str(studio), str(studio.parent)
+    return None, None
 
 
 class RealtimePresenter:
     """每一帧模拟器画面都画出来，并用这一帧的音频卡住播放速度。"""
 
-    def __init__(self, sample_rate, frame_rate):
+    def __init__(self, sample_rate, frame_rate, record_path=None):
         import pyglet
         from pyglet.gl import gl
         import sounddevice as sd
@@ -67,6 +80,17 @@ class RealtimePresenter:
         # 纹理只建一次，后面每帧只更新像素，避免长时间播放把显存撑满。
         self._texture = None
         self._audio = None
+        self._record_path = None
+        self._record_video_path = None
+        self._record_wav_path = None
+        self._record_video = None
+        self._record_wav = None
+        self._record_rate = int(round(sample_rate)) if sample_rate else 44100
+        if record_path:
+            from pathlib import Path
+            self._record_path = Path(record_path)
+            self._record_video_path = Path("/tmp/sf2_arcade_picture.mp4")
+            self._record_wav_path = Path("/tmp/sf2_arcade_sound.wav")
         try:
             # 大约 100 毫秒缓冲，用来盖过模型推理那几毫秒的抖动。
             # write() 会在缓冲区满了以后堵住，播放速度就被声卡锁在原速。
@@ -85,15 +109,19 @@ class RealtimePresenter:
             f"{self.frame_rate:.2f} fps. Press Esc to quit.",
             flush=True,
         )
+        if self._record_path is not None:
+            print(f"Recording to {self._record_path}", flush=True)
 
     def present(self, frame, audio):
         """画一帧，再把这一帧对应的音频送出去。窗口被关掉时结束整个进程。"""
         if self.closed:
             raise SystemExit(0)
         self._draw(frame)
+        self._record(frame, audio)
         self._play(audio)
 
     def close(self):
+        self._finish_record()
         if self._audio is not None:
             try:
                 self._audio.stop()
@@ -164,3 +192,94 @@ class RealtimePresenter:
         else:
             # 这一帧已经迟到了，把时钟拉回现在，避免后面连续快进补帧。
             self._next_frame = time.perf_counter()
+
+    def _record(self, frame, audio):
+        """把正在播放的这一帧和它的声音写下来。窗口仍是铺满屏幕的那一块。
+
+        先按整数倍最近邻放大，再写文件。原生小图直接做色度抽样时，
+        相邻两颗颜色不同的像素会被合成一颗，红和蓝就会偏。
+        """
+        if self._record_path is None:
+            return
+        import cv2
+        import wave
+        picture = np.ascontiguousarray(frame[:, :, :3])
+        height, width = picture.shape[:2]
+        scale = 4 if max(width, height) <= 400 else 1
+        if scale > 1:
+            picture = cv2.resize(
+                picture,
+                (width * scale, height * scale),
+                interpolation=cv2.INTER_NEAREST,
+            )
+        if self._record_video is None:
+            height, width = picture.shape[:2]
+            writer = cv2.VideoWriter(
+                str(self._record_video_path),
+                cv2.VideoWriter_fourcc(*"mp4v"),
+                self.frame_rate,
+                (width, height),
+            )
+            if not writer.isOpened():
+                print(f"Recording failed to open {self._record_video_path}", flush=True)
+                self._record_path = None
+                return
+            self._record_video = writer
+            wav = wave.open(str(self._record_wav_path), "wb")
+            wav.setnchannels(2)
+            wav.setsampwidth(2)
+            wav.setframerate(self._record_rate)
+            self._record_wav = wav
+        bgr = cv2.cvtColor(picture, cv2.COLOR_RGB2BGR)
+        self._record_video.write(bgr)
+        if audio is None or len(audio) == 0 or self._record_wav is None:
+            return
+        samples = np.array(audio, dtype=np.int16, copy=True)
+        if samples.ndim == 1:
+            samples = samples.reshape(-1, 2)
+        self._record_wav.writeframes(samples.tobytes())
+
+    def _finish_record(self):
+        """把画面和声音合成一条有声的 mp4。窗口关掉时也要收完，否则文件打不开。"""
+        video = self._record_video
+        wav = self._record_wav
+        self._record_video = None
+        self._record_wav = None
+        if video is not None:
+            video.release()
+        if wav is not None:
+            wav.close()
+        final = self._record_path
+        picture = self._record_video_path
+        sound = self._record_wav_path
+        if final is None or picture is None or not picture.is_file():
+            return
+        import shutil
+        import subprocess
+        ffmpeg, ffmpeg_cwd = _ffmpeg_tool()
+        # 画面流原样拷进成片，不再做一次色度抽样。声音另压成 aac。
+        if ffmpeg and sound is not None and sound.is_file() and sound.stat().st_size > 44:
+            final.parent.mkdir(parents=True, exist_ok=True)
+            done = subprocess.run(
+                [
+                    ffmpeg, "-y",
+                    "-i", str(picture),
+                    "-i", str(sound),
+                    "-c:v", "copy",
+                    "-c:a", "aac",
+                    "-shortest",
+                    str(final),
+                ],
+                cwd=ffmpeg_cwd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if done.returncode == 0 and final.is_file():
+                picture.unlink(missing_ok=True)
+                sound.unlink(missing_ok=True)
+                print(f"Saved {final}", flush=True)
+                return
+        if picture.is_file():
+            final.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(picture), str(final))
+            print(f"Saved picture without sound: {final}", flush=True)

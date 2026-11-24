@@ -1,0 +1,75 @@
+{
+  "positive": {
+    "file": "positive_half.png",
+    "life": 1,
+    "frame": 226,
+    "boxes": [
+      [
+        96,
+        98,
+        139,
+        142
+      ]
+    ]
+  },
+  "wall": {
+    "file": "wall.png",
+    "life": 1,
+    "frame": 220,
+    "boxes": [
+      [
+        148,
+        124,
+        192,
+        168
+      ]
+    ]
+  },
+  "fireball": {
+    "file": "fireball.png",
+    "boxes": [
+      [
+        221,
+        131,
+        246,
+        158
+      ]
+    ]
+  },
+  "fragments": [
+    {
+      "file": "fragment_halves.png",
+      "boxes": [
+        [
+          28,
+          173,
+          54,
+          216
+        ],
+        [
+          191,
+          173,
+          219,
+          216
+        ]
+      ]
+    },
+    {
+      "file": "fragment_shards.png",
+      "boxes": [
+        [
+          31,
+          191,
+          59,
+          216
+        ],
+        [
+          207,
+          191,
+          233,
+          216
+        ]
+      ]
+    }
+  ]
+}

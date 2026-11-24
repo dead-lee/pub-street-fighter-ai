@@ -11,8 +11,13 @@
 ```text
 .
 ├── data/                        # 关卡存档与游戏配置
-│   ├── Champion.X.Level*.state  # 第 1～12 关开局存档，难度为菜单 8 星
-│   ├── Champion.X.Bonus*.state  # 砸汽车、打砖墙、滚木桶的开打存档
+│   ├── Champion.X.Level*.state          # 第 1～12 关开局存档，难度为菜单 8 星
+│   ├── Champion.X.BonusCar.state        # 砸汽车的开打存档
+│   ├── Champion.X.BonusBrick.state      # 打砖墙的开打存档
+│   ├── Champion.X.BonusBarrel.state     # 滚木桶原来的开打存档
+│   ├── Champion.X.BonusBarrel.Live01.state  # 三份站着开打的木桶，和关卡存档一样用两位数字
+│   ├── Champion.X.BonusBarrel.Live02.state
+│   ├── Champion.X.BonusBarrel.Live03.state
 │   ├── data.json                # 游戏内存变量定义，含关卡编号 stage
 │   └── scenario_full_frame.json # 游戏场景配置
 ├── main/                        # 训练与测试代码
@@ -101,7 +106,7 @@ python -m main.test --episodes 1 --no-load-level-saves --realtime --record ~/Des
 | --- | --- |
 | 砸汽车 | 固定按键，可以打到 PERFECT |
 | 打砖墙 | 固定按键。存档上得分 544300 |
-| 滚木桶 | 和三份实战存档同一套规则。两段识别确认整桶后用轻升龙打，三份加分 63000、63300、62700 |
+| 滚木桶 | 和三份实战存档同一套规则。两段识别确认整桶后用轻升龙打。`Live01`、`Live02`、`Live03` 加分 63000、63300、62700 |
 
 连续闯关走到木桶时，不读存档，也不交给对战模型。用的是 `BarrelBonusWrapper.rule_action`。`main/barrel_vision.pt` 在整屏上找桶心，`main/barrel_crop.pt` 再看原像素上的一块，确认是整桶才留下。每帧最多 6 个桶心：滑槽里的桶、顶上露出的一截、落地的圆脸。碎片、墙、火花和人的身体不是桶。认错了改权重，不在规则里滤掉某一类。
 

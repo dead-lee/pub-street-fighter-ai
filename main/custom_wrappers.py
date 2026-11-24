@@ -90,13 +90,15 @@ def barrel_state_paths(include_original=True):
     每局开始随机抽一份，让同一套出招见到不同的桶。
     """
     paths = [BARREL_STATE_PATH] if include_original else []
-    prefix = "Champion.X.BonusBarrel.live"
+    prefix = "Champion.X.BonusBarrel.Live"
     for name in sorted(os.listdir(DATA_DIR)):
         if name.startswith(prefix) and name.endswith(".state"):
             paths.append(os.path.join(DATA_DIR, name))
     if not paths:
         paths.append(BARREL_STATE_PATH)
     return paths
+
+
 def _blank_action():
     return np.zeros(12, dtype=np.int8)
 
@@ -1031,7 +1033,7 @@ BARREL_DP_SHIFT = 10.0
 BARREL_ROLL_Y = 167.0
 BARREL_FALL_DP_X = 45.0
 BARREL_HADOU_Y = 140.0
-# live1 走到中间后，第 87 帧朝左升龙打不中，桶的色块在 y=69。
+# Live01 走到中间后，第 87 帧朝左升龙打不中，桶的色块在 y=69。
 # 再过一帧才打出 300，而且要朝桶滑过来的方向。以后第一发就出在这个高度的下一帧。
 BARREL_OPEN_Y = 69.0
 # 升龙脚在第 43 帧落地，状态仍是 524，第 51 帧才回到站立。

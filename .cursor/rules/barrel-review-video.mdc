@@ -5,7 +5,7 @@ alwaysApply: true
 
 # 三份存档的验证要带录像
 
-用 `Champion.X.BonusBarrel.live1.state`、`live2.state`、`live3.state` 验证木桶规则时，同一次跑完就把录像写到桌面。不要只打分数。不要等用户再要一次录像。
+用 `Champion.X.BonusBarrel.Live01.state`、`Live02.state`、`Live03.state` 验证木桶规则时，同一次跑完就把录像写到桌面。不要只打分数。不要等用户再要一次录像。
 
 无头录，不要另开窗口。三关接在同一个 mp4 里。每一帧把时间烧在右侧黑边上：`L{关}  {秒:05.2f}s`，黄字，关数从 1 起，每关自己的时钟从 0 开始。画面拉到 1280×896，每秒 59.92 帧。
 

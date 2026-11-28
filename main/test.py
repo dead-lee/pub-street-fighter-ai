@@ -140,7 +140,7 @@ def play_continuous_arcade_run(model: PPO, rendering: bool,
     """从第 1 关存档打起，之后都靠游戏自己换对手，不再读档。
 
     不在第 12 场结束。木桶、四大天王和结局都在后面。
-    窗口一直开着，直到用户按 Esc 或把窗口关掉。
+    窗口一直开着，直到用户按 Esc 或把窗口关掉。录像也在这时才收好。
     """
     env = make_level_env(1, False, rendering, render_skip, realtime, record_path)
     victories = 0
@@ -159,17 +159,8 @@ def play_continuous_arcade_run(model: PPO, rendering: bool,
                 print("Match lost. The window stays open until it is closed.", flush=True)
             print("Advancing in the running game (no save-state reload)...", flush=True)
             advance = env.get_wrapper_attr("advance_to_next_match")
-            # 平时不设步数上限，窗口留给用户关。
-            # 录像打完 12 场之后，结局不再开下一场。播完这段过场就收片，避免窗口一直开着、文件写不完。
-            ending_limit = 24000 if record_path is not None and victories >= 12 else None
-            try:
-                obs, info = advance(max_steps=ending_limit)
-            except RuntimeError:
-                if ending_limit is None:
-                    raise
-                run_complete = True
-                print("Ending recorded. Closing the video.", flush=True)
-                break
+            # 不在结局处自己停。看的人按 Esc 或关掉窗口，录像才收好。
+            obs, info = advance(max_steps=None)
             level += 1
         return victories, run_complete
     finally:

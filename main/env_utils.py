@@ -13,15 +13,9 @@ import numpy as np
 import stable_retro as retro
 from stable_baselines3.common.monitor import Monitor
 
-from main.custom_wrappers import (
-    BARREL_STATE_DIM,
-    BARREL_STATE_PATH,
-    STATE_PATHS,
-    BarrelActionWrapper,
-    BarrelBonusWrapper,
-    SFighterActionWrapper,
-    SFighterCustomWrapper,
-)
+from main.barrel_play import BARREL_STATE_DIM, BarrelActionWrapper, BarrelBonusWrapper
+from main.fight import SFighterActionWrapper, SFighterCustomWrapper
+from main.saves import BARREL_STATE_PATH, STATE_PATHS
 
 # Stable-Retro 里这版《街头霸王 2：冠军特别版》美版的游戏编号。
 GAME_ID = "StreetFighterIISpecialChampionEdition-Genesis-v0"

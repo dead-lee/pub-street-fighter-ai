@@ -1,7 +1,6 @@
 """用三份木桶开局、龙不出招的画面，训练认出每只桶的小网络。
 
-这里只覆盖站立时的标签。升龙把整屏抖起来的那几帧，要另外压过拳头和木梁，
-直接跑这个文件会把已经看过的权重换成只有站立画面的那一版。
+这里只覆盖站立时的标签。直接跑这个文件会把已经看过的权重换成只有站立画面的那一版。
 
 标签不是手动画的。墙不动，拿中位数当空背景。和背景不一样、又是桶板那种棕色的，
 才是正在出现的桶。人的身体按脚的位置涂掉，分数上的亮字也涂掉。
@@ -21,6 +20,8 @@ from main.barrel_vision import BarrelNet, BARREL_STRIDE, WEIGHT_PATH
 FRAME_DIR = Path("/tmp/barrel_forms")
 # 整屏颜色一起变的是过场，不能拿来当哪一格是桶。
 FLASH_FRACTION = 0.18
+# 奖金倒计时的两块牌。框住数字，不碰到滑槽里的桶。
+TIMER_BOXES = ((16, 52, 64, 86), (192, 52, 240, 86))
 
 
 def _brown(frame):
@@ -66,6 +67,9 @@ def label_mask(frame, background, agent_x, agent_y, status):
     mask[:16, :] = 0
     mask[:36, :88] = 0
     mask[:, 256:] = 0
+    # 左右两块计时牌。数字一换，橙色块会像桶板，但位置是固定的，不是桶。
+    for x0, y0, x1, y1 in TIMER_BOXES:
+        mask[y0:y1, x0:x1] = 0
     box = _ryu_box(agent_x, agent_y, status)
     if box is not None:
         x0, y0, x1, y1 = box
@@ -128,6 +132,10 @@ def build_samples(frames, metas, backgrounds):
 
 
 def train():
+    """只用站立画面从头学一版，写到 barrel_vision_standing.pt。
+
+    不要用它覆盖正在用的 barrel_vision.pt。第二段接着学走 teach_crop()。
+    """
     frames, metas, backgrounds = load_lives()
     images, targets, which = build_samples(frames, metas, backgrounds)
     positive = float(np.mean([item.mean() for item in targets]))
@@ -197,7 +205,7 @@ def train():
     threshold = float(np.clip((wall_peak + barrel_floor) / 2, 0.35, 0.75))
     print(f"wall {wall_peak:.3f} barrel {barrel_floor:.3f} threshold {threshold:.3f}", flush=True)
     blob = {"state": {key: value.detach().cpu() for key, value in net.state_dict().items()}, "threshold": threshold}
-    # 不写进正在用的权重。那一份已经把升龙帧里的拳头和木梁压掉了。
+    # 不写进正在用的权重。直接换掉会只剩站立画面。
     staging = WEIGHT_PATH.with_name("barrel_vision_standing.pt")
     torch.save(blob, staging)
     print(f"wrote {staging}", flush=True)
@@ -840,7 +848,7 @@ def _false_wall_cells(heat, positive, frame, background, agent_x):
 
 
 def _missed_barrel_cells(heat, positive, agent_x):
-    """标签里的整桶，这一帧热度不到 0.7。拳头那么小的一块不算。"""
+    """标签里的整桶，这一帧热度不到 0.7。不到 200 像素的一块不算。"""
     found = np.zeros_like(heat, np.float32)
     if positive is None:
         return found
@@ -1410,10 +1418,7 @@ def _fist_pixels(frame):
 
 
 def teach_fist():
-    """用举起的拳头当反例。格子里大半是拳头或衣服、又没有桶板，才标成不是桶。
-
-    贴在身边的整桶仍然是桶。滑槽、圆脸、碎片、人身上对不上就不写权重。
-    """
+    """核对热度之后留着旧权重。格子网络不再为举起的拳头单独加一层。"""
     frames, metas, backgrounds = load_lives()
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     blob = torch.load(WEIGHT_PATH, map_location="cpu", weights_only=False)
@@ -1592,74 +1597,6 @@ def teach_fist():
         )
 
     report("before")
-    if not images:
-        print("reject, keep old weights", flush=True)
-        return
-    # 一格的感受野只够一只桶，拳头贴在桶旁边时这一格仍像桶。只训练周围那一圈，从零开始。
-    for name, param in net.named_parameters():
-        param.requires_grad = name.startswith("wide.")
-    net.train()
-    optimizer = torch.optim.Adam((param for param in net.parameters() if param.requires_grad), lr=1e-4)
-    order = np.arange(len(images))
-    best_fist = 1.0
-    stalled = 0
-    for epoch in range(48):
-        rng = np.random.default_rng(epoch)
-        rng.shuffle(order)
-        total = 0.0
-        steps_done = 0
-        for start in range(0, len(order), 8):
-            pick = order[start:start + 8]
-            batch_x = np.stack([images[i] for i in pick]).astype(np.float32) / 255.0
-            batch_y = np.stack([targets[i] for i in pick])
-            batch_w = np.stack([weights[i] for i in pick])
-            if rng.random() < 0.5:
-                batch_x = batch_x[:, :, ::-1, :].copy()
-                batch_y = batch_y[:, :, ::-1].copy()
-                batch_w = batch_w[:, :, ::-1].copy()
-            tensor_x = torch.from_numpy(np.ascontiguousarray(batch_x)).permute(0, 3, 1, 2).to(device)
-            tensor_y = torch.from_numpy(np.ascontiguousarray(batch_y)).unsqueeze(1).to(device)
-            tensor_w = torch.from_numpy(np.ascontiguousarray(batch_w)).unsqueeze(1).to(device)
-            logits = net(tensor_x)
-            if logits.shape[-2:] != tensor_y.shape[-2:]:
-                logits = F.interpolate(logits, size=tensor_y.shape[-2:], mode="bilinear", align_corners=False)
-            loss_map = F.binary_cross_entropy_with_logits(logits, tensor_y, reduction="none")
-            loss = (loss_map * tensor_w).sum() / tensor_w.sum().clamp(min=1.0)
-            optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_((param for param in net.parameters() if param.requires_grad), 1.0)
-            optimizer.step()
-            total += float(loss.detach())
-            steps_done += 1
-        net.eval()
-        passed = report(f"epoch {epoch} loss {total / max(steps_done, 1):.4f}")
-        fist_now = holdout_peak()
-        if fist_now < best_fist - 0.002:
-            best_fist = fist_now
-            stalled = 0
-        else:
-            stalled += 1
-        if passed:
-            trained = {
-                "state": {key: value.detach().cpu() for key, value in net.state_dict().items()},
-                "threshold": threshold,
-            }
-            torch.save(trained, WEIGHT_PATH)
-            print(f"wrote {WEIGHT_PATH}", flush=True)
-            return
-        if stalled >= 8:
-            print("fist stopped moving, stop", flush=True)
-            break
-        if (
-            region_peak(play_frame, 30, 140, 80, 200) > 0.5
-            or piece_peak("/tmp/hitheight/edge_pieces.npz") > 0.45
-            or region_peak(round_frame, 50, 100, 120, 170) > 0.35
-            or region_peak(chute_frame, 90, 10, 180, 80) < 0.8
-            or region_peak(round_frame, 120, 140, 200, 200) < 0.8
-        ):
-            print("regression moved, stop", flush=True)
-            break
-        net.train()
     print("reject, keep old weights", flush=True)
 
 
@@ -1937,7 +1874,7 @@ def _hadou_pixels(frame, body):
 def teach_cases():
     """完整的桶是目标。反例是背景墙、波动拳的火球，和半片破口上的锯齿。
 
-    方框只盖破损的那一条，圆边留在框外。完整桶或滑槽掉了就不写权重。
+    多看一圈的那层已经不在网络里，半片交给裁块。这里只核对热度，不写权重。
     """
     frames, metas, backgrounds = load_lives()
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
@@ -2187,75 +2124,14 @@ def teach_cases():
         )
 
     report("before")
-    if not images or not hold_whole:
-        print("reject, keep old weights", flush=True)
-        return
-    for name, param in net.named_parameters():
-        # 半片和整桶在最后一层上长得一样。只学多看一圈的那层，让小半片掉下去，整桶的原输出留着。
-        param.requires_grad = name.startswith("wide.")
-    net.train()
-    optimizer = torch.optim.Adam((param for param in net.parameters() if param.requires_grad), lr=1e-4)
-    order = np.arange(len(images))
-    best_bad = 1.0
-    stalled = 0
-    for epoch in range(24):
-        rng = np.random.default_rng(epoch)
-        rng.shuffle(order)
-        total = 0.0
-        steps_done = 0
-        for start in range(0, len(order), 8):
-            pick = order[start:start + 8]
-            batch_x = np.stack([images[i] for i in pick]).astype(np.float32) / 255.0
-            batch_y = np.stack([targets[i] for i in pick])
-            batch_w = np.stack([weights[i] for i in pick])
-            if rng.random() < 0.5:
-                batch_x = batch_x[:, :, ::-1, :].copy()
-                batch_y = batch_y[:, :, ::-1].copy()
-                batch_w = batch_w[:, :, ::-1].copy()
-            tensor_x = torch.from_numpy(np.ascontiguousarray(batch_x)).permute(0, 3, 1, 2).to(device)
-            tensor_y = torch.from_numpy(np.ascontiguousarray(batch_y)).unsqueeze(1).to(device)
-            tensor_w = torch.from_numpy(np.ascontiguousarray(batch_w)).unsqueeze(1).to(device)
-            logits = net(tensor_x)
-            if logits.shape[-2:] != tensor_y.shape[-2:]:
-                logits = F.interpolate(logits, size=tensor_y.shape[-2:], mode="bilinear", align_corners=False)
-            loss_map = F.binary_cross_entropy_with_logits(logits, tensor_y, reduction="none")
-            loss = (loss_map * tensor_w).sum() / tensor_w.sum().clamp(min=1.0)
-            optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_((param for param in net.parameters() if param.requires_grad), 1.0)
-            optimizer.step()
-            total += float(loss.detach())
-            steps_done += 1
-        net.eval()
-        passed = report(f"epoch {epoch} loss {total / max(steps_done, 1):.4f}")
-        bad = shard_peak(shard_frame, backgrounds[0])
-        if bad < best_bad - 0.01:
-            best_bad = bad
-            stalled = 0
-        else:
-            stalled += 1
-        if passed:
-            trained = {
-                "state": {key: value.detach().cpu() for key, value in net.state_dict().items()},
-                "threshold": threshold,
-            }
-            torch.save(trained, WEIGHT_PATH)
-            print(f"wrote {WEIGHT_PATH}", flush=True)
-            return
-        if stalled >= 8:
-            print("negatives stopped moving, stop", flush=True)
-            break
-        if whole_peak() < 0.96 or region_peak(round_frame, 120, 140, 200, 200) < 0.96 or region_peak(frames[0][200], 90, 10, 180, 80) < 0.85 or region_peak(round_frame, 50, 100, 120, 170) > 0.35 or piece_peak("/tmp/hitheight/edge_pieces.npz") > 0.45 or region_peak(play_frame, 180, 140, 240, 200) > 0.5:
-            print("whole barrel moved, stop", flush=True)
-            break
-        net.train()
     print("reject, keep old weights", flush=True)
 
 
 def teach_crop():
-    """热度点裁成原像素的一块，学这一块是不是整桶。
+    """热度点裁成原像素的一块，从现有权重接着学这一块是不是整桶。
 
-    圆脸和滑槽是桶。半片和火球不是。墙上的圆第一段已经不报，不放进这块。整桶掉了或半片还在门槛上就不写权重。
+    圆脸和滑槽是桶。半片和火球不是。墙上的圆第一段已经不报，不放进这块。
+    写回 barrel_crop.pt 前要核对：整桶和滑槽还在门槛上，碎片和火球在门槛下。对不上就不写。
     """
     from main.barrel_vision import BarrelCropNet, CROP_PATH, crop_at
 
@@ -2443,6 +2319,240 @@ def _component_boxes(mask):
             int(stats[index, cv2.CC_STAT_AREA]),
         ))
     return found
+
+
+def _timer_cells(heat):
+    """两块计时牌盖住的格子。"""
+    cells = np.zeros(heat.shape, np.float32)
+    for x0, y0, x1, y1 in TIMER_BOXES:
+        cells[y0 // BARREL_STRIDE:y1 // BARREL_STRIDE, x0 // BARREL_STRIDE:x1 // BARREL_STRIDE] = 1.0
+    return cells
+
+
+def _timer_panel_cells(image):
+    """计时牌上还露着的黑底和橙色数字。桶滚过牌面时，木板那几格留着，不当反例。"""
+    rgb = image[:, :, :3].astype(np.int16)
+    red, green, blue = rgb[:, :, 0], rgb[:, :, 1], rgb[:, :, 2]
+    dark = (red < 48) & (green < 48) & (blue < 48)
+    led = (red > 140) & (blue < 50) & (green < 180) & (red > green)
+    panel = dark | led
+    cells = np.zeros((56, 80), dtype=bool)
+    for x0, y0, x1, y1 in TIMER_BOXES:
+        ys, ye = y0 // BARREL_STRIDE, y1 // BARREL_STRIDE
+        xs, xe = x0 // BARREL_STRIDE, x1 // BARREL_STRIDE
+        block = panel[ys * BARREL_STRIDE:ye * BARREL_STRIDE, xs * BARREL_STRIDE:xe * BARREL_STRIDE]
+        folded = block.reshape(ye - ys, BARREL_STRIDE, xe - xs, BARREL_STRIDE).mean(axis=(1, 3))
+        cells[ys:ye, xs:xe] = folded >= 0.45
+    return cells
+
+
+def teach_timer():
+    """计时牌的数字在第一层就标成不是桶。从正在用的权重接着学。
+
+    只压计时牌上的格子，圆脸和滑槽里已经认对的格子按原样守住。
+    滑槽桶和圆脸要留在门槛上，人身上不能冒出桶。对不上就不写回。
+    """
+    frames, metas, backgrounds = load_lives()
+    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    blob = torch.load(WEIGHT_PATH, map_location="cpu", weights_only=False)
+    torch.save(blob, Path("/tmp/barrel_vision_before_timer.pt"))
+    net = BarrelNet().to(device)
+    net.load_state_dict(blob["state"], strict=False)
+    net.eval()
+    threshold = float(blob["threshold"])
+
+    def read_video(index):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, index)
+        ok, frame = cap.read()
+        if not ok:
+            return None
+        small = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), (320, 224), interpolation=cv2.INTER_NEAREST)
+        small[:, 250:] = 0
+        return small
+
+    def timer_max(image):
+        heat = _heat_of(net, image, device)
+        cells = _timer_panel_cells(image)
+        if not cells.any():
+            return 0.0
+        return float(heat[cells].max())
+
+    train_frames = []
+    hold_frames = []
+    overlap_frames = []
+    video = Path("/Users/max/Desktop/barrel_review_1125_1055.mp4")
+    cap = cv2.VideoCapture(str(video))
+    count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    hot_seen = 0
+    for index in range(0, count, 8):
+        small = read_video(index)
+        if small is None:
+            break
+        # 这两帧有一只桶贴着左牌滚过。牌子上的木板要守住，不能跟着数字压掉。
+        if index in (3152, 3160):
+            overlap_frames.append(small.copy())
+        if timer_max(small) < 0.5:
+            continue
+        # 会亮起来的数字都拿来学。核对也看这些帧，加上没有参与学习的圆脸和人。
+        train_frames.append((index, small))
+        hold_frames.append(small)
+        hot_seen += 1
+    cap.release()
+    if not train_frames or not hold_frames:
+        print("reject, no timer frames", flush=True)
+        return
+
+    def hot_cells(image, box):
+        heat = _heat_of(net, image, device)
+        cells = np.zeros(heat.shape, dtype=bool)
+        x0, y0, x1, y1 = box
+        view = heat[y0 // BARREL_STRIDE:y1 // BARREL_STRIDE, x0 // BARREL_STRIDE:x1 // BARREL_STRIDE]
+        cells[y0 // BARREL_STRIDE:y1 // BARREL_STRIDE, x0 // BARREL_STRIDE:x1 // BARREL_STRIDE] = view >= 0.7
+        return cells
+
+    face = cv2.cvtColor(cv2.imread(str(LOCKED_DIR / "positive_half.png")), cv2.COLOR_BGR2RGB)
+    wall = cv2.cvtColor(cv2.imread(str(LOCKED_DIR / "wall.png")), cv2.COLOR_BGR2RGB)
+    chute = frames[0][152]
+    body = frames[0][250]
+    anchors = [
+        (face, hot_cells(face, (96, 98, 139, 142))),
+        (chute, hot_cells(chute, (210, 16, 256, 56))),
+        (body, hot_cells(body, (120, 140, 200, 200))),
+    ]
+    anchors = [(image, cells) for image, cells in anchors if cells.any()]
+    barrel_probes = []
+    for image in overlap_frames:
+        heat = _heat_of(net, image, device)
+        covered = (_timer_cells(heat) > 0) & ~_timer_panel_cells(image) & (heat >= 0.7)
+        if covered.any():
+            barrel_probes.append((image, covered))
+    anchors.extend(barrel_probes)
+
+    def negative_loss(images, scale):
+        masks = np.stack([_timer_panel_cells(image) for image in images])
+        batch = np.stack(images).astype(np.float32) / 255.0
+        tensor = torch.from_numpy(np.ascontiguousarray(batch)).permute(0, 3, 1, 2).to(device)
+        flat = net(tensor)[:, 0].reshape(len(images), -1)
+        mask = torch.from_numpy(masks.reshape(len(images), -1)).to(device)
+        valid = mask.any(dim=1)
+        if not bool(valid.any()):
+            return None
+        peak = flat.masked_fill(~mask, -1e4).max(dim=1).values[valid]
+        return F.binary_cross_entropy_with_logits(peak, torch.zeros_like(peak)) / scale
+
+    def region_peak(image, x0, y0, x1, y1):
+        heat = _heat_of(net, image, device)
+        return float(heat[y0 // BARREL_STRIDE:y1 // BARREL_STRIDE, x0 // BARREL_STRIDE:x1 // BARREL_STRIDE].max())
+
+    def report(tag):
+        peaks = [timer_max(image) for image in hold_frames]
+        timer = max(peaks)
+        above = sum(value >= 0.7 for value in peaks)
+        face_peak = region_peak(face, 96, 98, 139, 142)
+        chute_peak = region_peak(chute, 210, 16, 256, 56)
+        body_box = _body_slice(int(metas[0][250, 0]))
+        body_peak = region_peak(body, *body_box)
+        wall_peak = region_peak(wall, 148, 124, 192, 168)
+        barrel_peak = 1.0
+        if barrel_probes:
+            barrel_peak = min(float(_heat_of(net, image, device)[cells].max()) for image, cells in barrel_probes)
+        print(
+            f"{tag} timer {timer:.3f} above {above} face {face_peak:.3f} chute {chute_peak:.3f} "
+            f"body {body_peak:.3f} wall {wall_peak:.3f} barrel {barrel_peak:.3f}",
+            flush=True,
+        )
+        return (
+            timer < 0.7 and face_peak >= 0.7 and chute_peak >= 0.7
+            and body_peak < 0.7 and wall_peak < 0.7 and barrel_peak >= 0.7
+        ), face_peak, chute_peak, body_peak, wall_peak, barrel_peak
+
+    print(f"train {len(train_frames)} hold {len(hold_frames)} anchors {len(anchors)}", flush=True)
+    report("before")
+    def anchor_backward():
+        total = 0.0
+        for image, cells in anchors:
+            anchor = torch.from_numpy(image.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0).to(device)
+            positive = net(anchor)[0, 0][torch.from_numpy(cells).to(device)]
+            loss = F.binary_cross_entropy_with_logits(positive, torch.ones_like(positive))
+            loss.backward()
+            total += float(loss.detach())
+        return total
+
+    def finish_step(total):
+        torch.nn.utils.clip_grad_norm_(net.parameters(), 5.0)
+        optimizer.step()
+        return total
+
+    def save_if_passed(tag, total):
+        net.eval()
+        passed, face_peak, chute_peak, body_peak, wall_peak, barrel_peak = report(f"{tag} loss {total:.3f}")
+        if face_peak < 0.85 or chute_peak < 0.85 or body_peak > 0.2 or wall_peak > 0.2 or barrel_peak < 0.85:
+            print("regression moved, stop", flush=True)
+            return "stop"
+        if passed:
+            trained = {
+                "state": {key: value.detach().cpu() for key, value in net.state_dict().items()},
+                "threshold": threshold,
+            }
+            torch.save(trained, WEIGHT_PATH)
+            print(f"wrote {WEIGHT_PATH}", flush=True)
+            return "wrote"
+        return "continue"
+
+    optimizer = torch.optim.Adam(net.parameters(), lr=1e-5)
+    # 计时牌和真桶放在同一步里更新。分开更新时，守住圆脸的那一步会把计时牌又抬回去。
+    for step in range(160):
+        net.train()
+        optimizer.zero_grad()
+        total = 0.0
+        for start in range(0, len(train_frames), 8):
+            pick = [image for _, image in train_frames[start:start + 8]]
+            loss = negative_loss(pick, max(len(train_frames) / 8, 1))
+            if loss is None:
+                continue
+            loss.backward()
+            total += float(loss.detach())
+        total += anchor_backward()
+        finish_step(total)
+        if step % 10 == 9 or step == 0:
+            outcome = save_if_passed(f"step {step}", total)
+            if outcome != "continue":
+                return
+    # 已经掉下去的帧再平均进去，会把剩下几帧的梯度冲掉。这里只压还亮着的。
+    for step in range(80):
+        hot = [(index, image) for index, image in train_frames if timer_max(image) >= 0.7]
+        if not hot:
+            break
+        if step == 0 or step % 10 == 9:
+            print("still hot " + " ".join(str(index) for index, _ in hot), flush=True)
+        net.train()
+        optimizer.zero_grad()
+        pick = [image for _, image in hot]
+        loss = negative_loss(pick, 1)
+        if loss is None:
+            break
+        loss.backward()
+        total = float(loss.detach()) + anchor_backward()
+        finish_step(total)
+        outcome = save_if_passed(f"hard {step}", total)
+        if outcome != "continue":
+            return
+    for index, image in train_frames:
+        heat = _heat_of(net, image, device)
+        cells = _timer_panel_cells(image)
+        if not cells.any() or float(heat[cells].max()) < 0.7:
+            continue
+        ys, xs = np.where(cells & (heat >= 0.7))
+        spots = " ".join(f"{int(x) * BARREL_STRIDE + 2},{int(y) * BARREL_STRIDE + 2}:{heat[y, x]:.3f}" for y, x in zip(ys, xs))
+        outside = heat.copy()
+        outside[cells] = 0
+        print(f"left {index} timer {spots} outside {float(outside.max()):.3f}", flush=True)
+        marked = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        for y, x in zip(ys, xs):
+            px, py = int(x) * BARREL_STRIDE + 2, int(y) * BARREL_STRIDE + 2
+            cv2.drawMarker(marked, (px, py), (0, 255, 255), cv2.MARKER_CROSS, 12, 1)
+        cv2.imwrite(f"/tmp/timer_left_{index}.png", cv2.resize(marked, (640, 448), interpolation=cv2.INTER_NEAREST))
+    print("reject, keep old weights", flush=True)
 
 
 if __name__ == "__main__":

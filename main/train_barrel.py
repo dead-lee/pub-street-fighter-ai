@@ -434,7 +434,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 0
 
-    from main.custom_wrappers import (
+    from main.barrel_play import (
         BARREL_APPROACH_SCALE,
         BARREL_KNOCKDOWN_PENALTY,
         BARREL_SCORE_SCALE,

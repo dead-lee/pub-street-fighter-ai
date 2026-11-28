@@ -81,10 +81,7 @@ def _round_outline_centers(frame, prev):
 
 
 class BarrelNet(nn.Module):
-    """每个格子先看大约一只桶。旁边再看一圈，拳头比桶小，这一圈里装不满一只桶。
-
-    旁边这一层从零开始，不改变已经学好的输出，直到用拳头画面把它训开。
-    """
+    """每个格子看大约一只桶，输出这一格像不像桶。"""
 
     def __init__(self):
         super().__init__()
@@ -103,16 +100,9 @@ class BarrelNet(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(16, 1, 1),
         )
-        self.wide = nn.Conv2d(16, 1, kernel_size=7, padding=3, bias=False)
-        nn.init.zeros_(self.wide.weight)
 
     def forward(self, image):
-        features = image
-        layers = list(self.net.children())
-        for layer in layers[:-1]:
-            features = layer(features)
-        # 原来那一格的判断，加上周围一圈。零权重时两项里的第二项是 0。
-        return layers[-1](features) + self.wide(features)
+        return self.net(image)
 
 
 class BarrelCropNet(nn.Module):
